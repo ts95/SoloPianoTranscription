@@ -435,7 +435,42 @@ def build_measured_part(items, marks, ts_str, part_id):
         for off, el in layer:
             s.insert(off, el)
         s.sliceAtOffsets(bar_offsets, addTies=True, inPlace=True)
-        rebarred.append(s.makeMeasures())
+        measured = s.makeMeasures()
+        # Every gap gets explicit, VISIBLE rests. Left unfilled, music21's
+        # exporter pads gaps with print-object="no" rests, which MuseScore
+        # shows as grayed-out ghost rests — the score must carry its rests
+        # as real engraved symbols, not exporter artifacts. Gaps are split
+        # into simple values aligned to their own size (whole bar, half on
+        # beats 1/3, quarter on beats, ...), never dotted-rest oddities.
+        from music21 import note as m21note
+
+        def gap_rests(off, rem):
+            while rem > 0:
+                for p in (Fraction(4), Fraction(2), Fraction(1),
+                          Fraction(1, 2), Fraction(1, 4), Fraction(1, 8)):
+                    if rem >= p and off % p == 0:
+                        yield off, p
+                        off, rem = off + p, rem - p
+                        break
+                else:
+                    yield off, rem  # finer than the grid; emit as-is
+                    return
+
+        for meas in measured.getElementsByClass(Measure):
+            bar_len = Fraction(meas.barDuration.quarterLength)
+            cur = Fraction(0)
+            spans = []
+            for el in sorted(meas.notesAndRests, key=lambda e: e.offset):
+                el_off = Fraction(el.offset)
+                if el_off > cur:
+                    spans.append((cur, el_off - cur))
+                cur = max(cur, el_off + Fraction(el.duration.quarterLength))
+            if cur < bar_len:
+                spans.append((cur, bar_len - cur))
+            for span_off, span_len in spans:
+                for r_off, r_len in gap_rests(span_off, span_len):
+                    meas.insert(float(r_off), m21note.Rest(quarterLength=float(r_len)))
+        rebarred.append(measured)
 
     ps = m21stream.PartStaff(id=part_id)
     if len(rebarred) == 1:
@@ -1058,6 +1093,22 @@ def cmd_quantize(args):
                                    "sustained_as_second_voice": sustained,
                                    "rolled_chords_arpeggiated": arpeggiated}
 
+    # Both staves must span the same number of measures: music21 pads a
+    # shorter part with truly EMPTY trailing measures at export, which
+    # MuseScore rejects as corruption ("Found: 0/1. Expected: 4/4.").
+    # Pad explicitly with full-bar rests.
+    from music21.stream import Measure as M21Measure
+    bar_ql = Fraction(m21meter.TimeSignature(ts_str).barDuration.quarterLength)
+    part_list = list(score.parts)
+    counts = [len(p.getElementsByClass(M21Measure)) for p in part_list]
+    for p, cnt in zip(part_list, counts):
+        if cnt < max(counts):
+            last = p.getElementsByClass(M21Measure)[-1]
+            for k in range(cnt, max(counts)):
+                meas = M21Measure(number=k + 1)
+                meas.insert(0, m21note.Rest(quarterLength=float(bar_ql)))
+                p.insert(float(Fraction(last.offset) + bar_ql * (k - cnt + 1)), meas)
+
     normalize_accidentals(score)
 
     if any([args.title, args.composer, args.arranger, args.performer]):
@@ -1098,31 +1149,88 @@ def cmd_quantize(args):
     return 0
 
 
-def cmd_beats(args):
-    """Beat-track the recording (audio, not MIDI) with librosa; write beats.json."""
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        import librosa
-        y, sr = librosa.load(args.input, sr=22050, mono=True)
-        oenv = librosa.onset.onset_strength(y=y, sr=sr)
-        kwargs = {}
-        if args.bpm_hint:
-            # Pin the tempo: a soft start_bpm prior still lets the tracker lock
-            # onto a sub-pulse (e.g. the dotted-eighth of a 3-3-2 groove at 4/3
-            # of the true BPM). The DP still places each beat locally, so
-            # drift/rubato is tracked — only the metrical level is forced.
-            kwargs["bpm"] = args.bpm_hint
+def track_beats_from_midi(mid_path, bpm_hint, lam=6.0, mu=1.0):
+    """DP beat tracking on the transcribed MIDI's own onsets — far more precise
+    than audio tracking when the transcription is trustworthy. Audio trackers
+    pinned to a tempo hint cannot follow deep ritardandi: they fall behind,
+    then race ahead at a fake fast tempo and mangle every barline after the
+    slowdown. Here each onset cluster is a beat candidate scored by onset
+    strength (velocity sum) minus a tempo-continuity penalty (log-period change
+    vs the locally smoothed period, plus a weak pull toward the hint), so the
+    grid follows rubato at full depth. Returns beat times in the MIDI timeline."""
+    import bisect as _bisect
+    import math
+    import pretty_midi
+    pm = pretty_midi.PrettyMIDI(mid_path)
+    raw = sorted((n.start, float(n.velocity))
+                 for inst in pm.instruments for n in inst.notes)
+    clusters = []
+    for s, v in raw:
+        if clusters and s - clusters[-1][0] < 0.03:
+            clusters[-1] = (clusters[-1][0], clusters[-1][1] + v)
         else:
-            kwargs["start_bpm"] = 120.0
-        tempo, beats = librosa.beat.beat_track(
-            onset_envelope=oenv, sr=sr, units="time", trim=False,
-            tightness=args.tightness, **kwargs)
-    beats = [round(float(b), 4) for b in beats]
+            clusters.append((s, v))
+    times = [c[0] for c in clusters]
+    wmax = max(c[1] for c in clusters)
+    weights = [c[1] / wmax for c in clusters]
+    ph = 60.0 / bpm_hint
+    pmin, pmax = 0.6 * ph, 1.9 * ph
+    n = len(times)
+    best, prev, per = [-1e9] * n, [-1] * n, [ph] * n
+    for i in range(n):
+        if times[i] - times[0] < 2.0:
+            best[i] = weights[i]
+        lo = _bisect.bisect_left(times, times[i] - pmax)
+        for j in range(lo, i):
+            p = times[i] - times[j]
+            if not (pmin <= p <= pmax) or best[j] < -1e8:
+                continue
+            cost = lam * math.log(p / per[j]) ** 2 + mu * math.log(p / ph) ** 2
+            sc = best[j] + weights[i] - cost
+            if sc > best[i]:
+                best[i], prev[i], per[i] = sc, j, 0.7 * per[j] + 0.3 * p
+    end = max((i for i in range(n) if times[i] > times[-1] - 2.5),
+              key=lambda i: best[i])
+    seq = []
+    i = end
+    while i != -1:
+        seq.append(times[i])
+        i = prev[i]
+    return sorted(seq)
+
+
+def cmd_beats(args):
+    """Beat-track the recording with librosa, or — with --from-midi — track the
+    transcription's own onsets (preferred for heavy rubato); write beats.json."""
+    if args.from_midi:
+        tracked = track_beats_from_midi(args.from_midi, args.bpm_hint or 120.0)
+        beats = [round(float(b) + args.midi_shift, 4) for b in tracked]
+        tempo = (args.bpm_hint or 120.0)
+    else:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            import librosa
+            y, sr = librosa.load(args.input, sr=22050, mono=True)
+            oenv = librosa.onset.onset_strength(y=y, sr=sr)
+            kwargs = {}
+            if args.bpm_hint:
+                # Pin the tempo: a soft start_bpm prior still lets the tracker lock
+                # onto a sub-pulse (e.g. the dotted-eighth of a 3-3-2 groove at 4/3
+                # of the true BPM). The DP still places each beat locally, so
+                # drift/rubato is tracked — only the metrical level is forced.
+                kwargs["bpm"] = args.bpm_hint
+            else:
+                kwargs["start_bpm"] = 120.0
+            tempo, beats = librosa.beat.beat_track(
+                onset_envelope=oenv, sr=sr, units="time", trim=False,
+                tightness=args.tightness, **kwargs)
+        beats = [round(float(b), 4) for b in beats]
     periods = [b - a for a, b in zip(beats, beats[1:])]
     cv = (statistics.stdev(periods) / statistics.mean(periods)) if len(periods) > 2 else None
     report = {
         "audio": args.input,
+        "source": "midi-onsets" if args.from_midi else "audio",
         "bpm_hint": args.bpm_hint,
         "tempo_global_bpm": round(float(np.atleast_1d(tempo)[0]), 1),
         "tempo_median_bpm": round(60 / statistics.median(periods), 1) if periods else None,
@@ -1353,12 +1461,20 @@ def cmd_post(args):
     from music21.stream import Measure
 
     score = converter.parse(args.input)
-    changes = {"respelled": 0, "respelled_directional": 0, "ties_merged": "stripTies applied",
+    changes = {"respelled": 0, "respelled_directional": 0, "ties_merged": None,
                "rehand_moved": 0, "rebarred": None, "pedal_marks": 0, "pedal_note": None,
                "dynamics_inserted": 0, "hairpins_inserted": 0, "dynamics_note": None}
 
-    # Merge fragmented tied chains; export re-creates only the ties barlines require.
-    score = score.stripTies()
+    # Merge tied chains ONLY when re-barring: that's what lets
+    # build_measured_part re-slice them at the new meter. Without --time-sig
+    # the quantize output is already barline-exact, and stripTies flattens
+    # overlapping voices into one sequential line (overfull measures that
+    # makeTies cannot repair).
+    if args.time_sig:
+        score = score.stripTies()
+        changes["ties_merged"] = "stripTies applied (re-barring)"
+    else:
+        changes["ties_merged"] = "skipped (no re-bar; measures already barline-exact)"
 
     # Move clearly out-of-range notes to the other staff (piano = two PartStaffs).
     # Must happen before re-barring: makeMeasures rebuilds the measures consistently;
@@ -1412,12 +1528,6 @@ def cmd_post(args):
         parts = new_parts
         treble = sorted(parts, key=avg_pitch, reverse=True)[0] if len(parts) == 2 else None
         changes["rebarred"] = f"{args.time_sig} across {len(new_parts)} staves"
-
-    # stripTies leaves merged notes overflowing their measure, and export does
-    # NOT re-split them (the makeMeasures-without-makeTies gotcha — mscore
-    # exit 40 / unbalanced lint). Re-split every part at barlines.
-    for part in score.parts:
-        part.makeTies(inPlace=True)
 
     def m21_key(name):
         return m21key.Key(name.split()[0], name.split()[1] if " " in name else "major")
@@ -1679,6 +1789,13 @@ def main():
     b.add_argument("--tightness", type=float, default=100.0,
                    help="how strongly the tracker resists tempo change (default 100; "
                         "lower for heavy rubato)")
+    b.add_argument("--from-midi",
+                   help="track the (cleaned) MIDI's own onsets instead of the audio "
+                        "— follows deep ritardandi the audio tracker cannot; the "
+                        "audio argument is then used for the report only")
+    b.add_argument("--midi-shift", type=float, default=0.0,
+                   help="seconds to ADD to MIDI-tracked beats so beats.json stays in "
+                        "the audio timeline (the clean pass's trim_shift_s)")
     b.set_defaults(fn=cmd_beats)
 
     q = sub.add_parser("quantize", help="MIDI -> MusicXML on a fixed BPM grid or "
