@@ -32,13 +32,18 @@ This takes a few minutes on CPU — run it in the background and wait for it; do
 
 ## Stage 3 — MIDI → MusicXML + MuseScore file
 
-Follow the `midi-to-musicxml` skill (exports both formats):
+Follow the `midi-to-musicxml` skill (exports both formats). **Never feed the `.mid` to MuseScore** — its import quantization is unreliable (auto-detects its own tempo, can lock onto the wrong pulse). Quantize with the project script, then use mscore only for the `.musicxml` → `.mscz` format conversion:
 
 ```bash
+# BPM: prefer the user / web ground truth (original-song BPM for covers);
+# else an analyze candidate — see the midi-to-musicxml skill for validation.
+.venv/bin/python scripts/transcription_cleanup.py quantize \
+  'output/<slug>/<slug>.mid' 'output/<slug>/<slug>.musicxml' --bpm <bpm>
 MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
-"$MSCORE" 'output/<slug>/<slug>.mid' -o 'output/<slug>/<slug>.musicxml'
-"$MSCORE" 'output/<slug>/<slug>.mid' -o 'output/<slug>/<slug>.mscz'
+"$MSCORE" 'output/<slug>/<slug>.musicxml' -o 'output/<slug>/<slug>.mscz'
 ```
+
+Check the quantize summary: `score_seconds_at_bpm` must be within a few percent of `audio_seconds`, otherwise the BPM is wrong — try another candidate.
 
 ## Wrap up
 

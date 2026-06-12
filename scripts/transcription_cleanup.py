@@ -2,9 +2,12 @@
 """Analysis and cleanup helpers for Transkun piano transcriptions.
 
 Subcommands:
-  analyze <in.mid>                      print a JSON report (read-only)
-  clean   <in.mid> <out.mid> [opts]     MIDI-level pre-clean before MuseScore import
-  post    <in.musicxml> <out.musicxml>  music21 notation-level fixes after import
+  analyze  <in.mid>                       print a JSON report (read-only)
+  clean    <in.mid> <out.mid> [opts]      MIDI-level pre-clean (artifacts, trim, meta)
+  quantize <in.mid> <out.musicxml> --bpm  MIDI -> MusicXML on a fixed grid (replaces
+                                          MuseScore's MIDI import, which auto-detects
+                                          its own tempo and must never be used)
+  post     <in.musicxml> <out.musicxml>   music21 notation-level fixes
 
 All decisions that require judgment (key, meter, thresholds) are passed in as
 flags; this script only does the mechanical work and reports what it did.
@@ -312,6 +315,90 @@ def cmd_clean(args):
     return 0
 
 
+# Single-symbol note values (incl. dotted), longest first, for duration snapping.
+EXPRESSIBLE_QL = [6, 4, 3, 2, 1.5, 1, 0.75, 0.5, 0.375, 0.25, 0.1875, 0.125, 0.0625]
+
+
+def cmd_quantize(args):
+    """MIDI -> MusicXML quantized on a fixed BPM grid with music21.
+
+    MuseScore 4's MIDI import auto-detects its own tempo (it ignores the tempo
+    meta event) and can lock onto a sub-pulse — e.g. the dotted-eighth of a
+    3-3-2 groove, 4/3 of the true BPM — which wrongs every barline and sprays
+    fake tuplets. This quantizer trusts the caller's BPM instead: onsets snap
+    to a fixed grid, same-slot notes merge into chords, and durations are
+    capped at the next onset in the same staff (pedal marks carry sustain).
+    """
+    from fractions import Fraction
+    from music21 import (chord as m21chord, duration as m21dur, key as m21key,
+                         meter as m21meter, note as m21note, stream as m21stream)
+
+    pm = pretty_midi.PrettyMIDI(args.input)
+    notes = all_notes(pm)
+    if not notes:
+        print(json.dumps({"error": "no notes found"}))
+        return 1
+
+    bpm = Fraction(str(args.bpm))
+    grid = Fraction(4, args.grid)  # e.g. --grid 32 -> 1/8 quarterLength
+    expressible = sorted((Fraction(str(x)) for x in EXPRESSIBLE_QL), reverse=True)
+    split_name = (hand_split(notes)["suggested_split"] if args.split == "auto"
+                  else args.split)
+    split = pretty_midi.note_name_to_number(split_name)
+
+    def to_ql(t):
+        return Fraction(t).limit_denominator(100000) * bpm / 60
+
+    def snap(ql):
+        return round(ql / grid) * grid
+
+    def dur_down(ql):
+        for c in expressible:
+            if c <= ql:
+                return c
+        return grid
+
+    score = m21stream.Score()
+    summary = {"input": args.input, "output": args.output, "bpm": float(bpm),
+               "grid": f"1/{args.grid}", "hand_split": split_name, "staves": {}}
+    for name, hand in (("treble", [n for n in notes if n.pitch >= split]),
+                       ("bass", [n for n in notes if n.pitch < split])):
+        slots = {}
+        for n in hand:
+            slots.setdefault(snap(to_ql(n.start)), []).append(n)
+        onsets = sorted(slots)
+        ps = m21stream.PartStaff(id=f"P1-{name}")
+        if args.key:
+            tonic, mode = args.key.split()[0], (args.key.split() + ["major"])[1]
+            ps.insert(0, m21key.KeySignature(m21key.Key(tonic, mode).sharps))
+        if args.time_sig:
+            ps.insert(0, m21meter.TimeSignature(args.time_sig))
+        capped = 0
+        for i, off in enumerate(onsets):
+            group = slots[off]
+            raw_dur = max(to_ql(n.end) - off for n in group)
+            cap = onsets[i + 1] - off if i + 1 < len(onsets) else raw_dur
+            if raw_dur > cap:
+                capped += 1
+            pitches = sorted({n.pitch for n in group})
+            el = (m21note.Note(pitches[0]) if len(pitches) == 1
+                  else m21chord.Chord(pitches))
+            el.duration = m21dur.Duration(dur_down(max(min(raw_dur, cap), grid)))
+            ps.insert(off, el)
+        score.insert(0, ps)
+        summary["staves"][name] = {"events": len(onsets), "durations_capped_at_next_onset": capped}
+
+    score.write("musicxml", fp=args.output)
+    # Sanity check the BPM: written length should match the audio length.
+    end_t = pm.get_end_time()
+    summary["audio_seconds"] = round(end_t, 1)
+    summary["score_seconds_at_bpm"] = round(float(score.highestTime) * 60 / float(bpm), 1)
+    summary["note"] = ("score_seconds_at_bpm should be within a few percent of "
+                       "audio_seconds; a big mismatch means the BPM is wrong")
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
 DYNAMIC_LEVELS = [(30, "pp"), (45, "p"), (60, "mp"), (75, "mf"), (90, "f"), (200, "ff")]
 
 
@@ -569,11 +656,27 @@ def main():
     c.add_argument("--report", help="also write the JSON summary to this file")
     c.set_defaults(fn=cmd_clean)
 
-    p = sub.add_parser("post", help="music21 notation fixes on MuseScore-exported MusicXML")
+    q = sub.add_parser("quantize", help="MIDI -> MusicXML on a fixed BPM grid "
+                                        "(never use MuseScore's MIDI import instead)")
+    q.add_argument("input")
+    q.add_argument("output")
+    q.add_argument("--bpm", type=float, required=True,
+                   help="performance tempo from ground truth/user/analyze — the whole "
+                        "grid depends on it; check the sanity fields in the summary")
+    q.add_argument("--grid", type=int, default=32,
+                   help="onset grid as a note-value denominator (default 32 = 32nd notes)")
+    q.add_argument("--split", default="auto",
+                   help='hand-split pitch, e.g. "E3"; default: auto from pitch-gap analysis')
+    q.add_argument("--key", help='e.g. "D major" — inserts the key signature')
+    q.add_argument("--time-sig", help='e.g. "3/4" — inserts the time signature '
+                                      '(post re-bars anyway when given --time-sig)')
+    q.set_defaults(fn=cmd_quantize)
+
+    p = sub.add_parser("post", help="music21 notation fixes on quantized MusicXML")
     p.add_argument("input")
     p.add_argument("output")
     p.add_argument("--key", help='e.g. "D major" — drives enharmonic respelling')
-    p.add_argument("--time-sig", help='e.g. "3/4" — re-bar (MuseScore MIDI import ignores the meta event)')
+    p.add_argument("--time-sig", help='e.g. "3/4" — re-bar at this meter')
     p.add_argument("--pedal-from", help="clean-pass JSON report containing pedal_regions")
     p.add_argument("--dynamics-from", help="cleaned .mid — derive dynamics/hairpins from velocities")
     p.add_argument("--no-rehand", action="store_true")
