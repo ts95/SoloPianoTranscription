@@ -899,6 +899,9 @@ def cmd_quantize(args):
         phase, conf, cues = infer_bar_phase(events, beats_per_bar)
         summary["bar_phase"] = {"downbeat_at_beat": phase, "confidence": conf,
                                 "cues": cues}
+        if args.bar_phase is not None:
+            phase, conf = args.bar_phase % beats_per_bar, 1.0
+            summary["bar_phase"]["override"] = phase
         if phase != 0 and conf >= 0.2:
             pad = Fraction(beats_per_bar - phase)
             summary["bar_phase"]["pickup"] = (
@@ -988,7 +991,7 @@ def cmd_quantize(args):
                 te = m21expr.TextExpression(label)
                 te.style.fontStyle = "italic"
                 marks.append((beat_k, te))
-        items, capped, sustained = [], 0, 0
+        items, capped, sustained, filled = [], 0, 0, 0
         for i, off in enumerate(onsets):
             group = slots[off]
             raw_dur = max(to_ql(n.end) - off for n in group)
@@ -1008,11 +1011,14 @@ def cmd_quantize(args):
                 sustained += 1
             elif raw_dur > cap:
                 capped += 1
-            elif raw_dur >= cap * Fraction(3, 5) and not args.no_legato_fill:
-                # Legato assumption (default): a note held most of the way to
-                # the next onset fills the gap — flooring it leaves 32nd-rest
+            elif not args.no_legato_fill:
+                # Legato assumption (default): every note fills the gap to the
+                # next same-hand onset, however early the key was released —
+                # pedaled playing releases keys early while the pedal carries
+                # the sustain, and flooring performed lengths leaves 32nd-rest
                 # confetti. --no-legato-fill keeps performed lengths for
                 # articulation-faithful engraving (staccato etc. by ear).
+                filled += 1
                 dur = cap
             # Keep durations metrically consistent with their beat's division:
             # ternary-beat notes stay inside the beat (tuplet values only);
@@ -1033,6 +1039,7 @@ def cmd_quantize(args):
         score.insert(0, build_measured_part(items, marks, ts_str, f"P1-{name}"))
         summary["staves"][name] = {"events": len(onsets),
                                    "durations_capped_at_next_onset": capped,
+                                   "legato_filled_to_next_onset": filled,
                                    "sustained_as_second_voice": sustained}
 
     normalize_accidentals(score)
@@ -1156,7 +1163,10 @@ def cmd_verify(args):
         bar_pitch_sets.append(pcs)
 
     with tempfile.TemporaryDirectory() as td:
-        render_wav = f"{td}/render.wav"
+        # mp3, not wav: mscore's wav export can fail (exit 51) in environments
+        # where mp3 export still works, and lossy encoding is irrelevant to
+        # chroma DTW.
+        render_wav = f"{td}/render.mp3"
         res = subprocess.run([args.mscore, args.score, "-o", render_wav],
                              capture_output=True)
         if res.returncode != 0 or not __import__("os").path.getsize(render_wav):
@@ -1386,6 +1396,12 @@ def cmd_post(args):
         parts = new_parts
         treble = sorted(parts, key=avg_pitch, reverse=True)[0] if len(parts) == 2 else None
         changes["rebarred"] = f"{args.time_sig} across {len(new_parts)} staves"
+
+    # stripTies leaves merged notes overflowing their measure, and export does
+    # NOT re-split them (the makeMeasures-without-makeTies gotcha — mscore
+    # exit 40 / unbalanced lint). Re-split every part at barlines.
+    for part in score.parts:
+        part.makeTies(inPlace=True)
 
     def m21_key(name):
         return m21key.Key(name.split()[0], name.split()[1] if " " in name else "major")
@@ -1668,6 +1684,10 @@ def main():
     q.add_argument("--key", help='e.g. "D major" — inserts the key signature')
     q.add_argument("--time-sig", help='e.g. "3/4" — inserts the time signature and '
                                       'sets the bar length for downbeat inference')
+    q.add_argument("--bar-phase", type=int,
+                   help="force the downbeat phase (0 = first onset is a downbeat) "
+                        "instead of trusting the inference — use when its "
+                        "confidence is marginal and the ear disagrees")
     q.add_argument("--no-legato-fill", action="store_true",
                    help="keep performed note lengths instead of filling gaps to the "
                         "next onset (for articulation-faithful engraving)")
