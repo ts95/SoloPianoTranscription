@@ -104,6 +104,8 @@ Write targeted music21 snippets against specific measures to repair what you're 
 
 Structural checks: `.cleaned.musicxml` has the chosen `<fifths>`/`<beats>` values; note-type histogram improved vs the raw conversion; mscore exited 0 for the `.mscz`; originals untouched.
 
+**Visual inspection (rule)**: export `"$MSCORE" '<slug>.cleaned.mscz' -o '<slug>.cleaned.pdf'` and Read the PDF (at least first, a busy middle, and final page). Look for what lint cannot see: floating/doubled marks, pedal lines not under the bass staff, collisions, multi-voice clutter / padding-rest spray, drone durations that halt the texture. Fix what is decidable, re-export, re-inspect; flag the rest in the notes.
+
 Then the objective check — render the score and compare it to the recording bar by bar:
 
 ```bash

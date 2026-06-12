@@ -81,6 +81,7 @@ ffmpeg -i output/<slug>/<slug>.wav -codec:a libmp3lame -q:a 0 output/<slug>/<slu
   --pedal-from output/<slug>/<slug>.mid
 MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 "$MSCORE" output/<slug>/<slug>.musicxml -o output/<slug>/<slug>.mscz
+"$MSCORE" output/<slug>/<slug>.mscz -o output/<slug>/<slug>.pdf
 ```
 
 `transcription_cleanup.py` also provides `analyze` (read-only JSON report: key/meter/tempo estimates, artifact candidates, rubato, fast runs), `beats` (beat tracking seeded with a known BPM — librosa on the recording, or `--from-midi` to DP-track the transcription's own onsets, which follows deep ritardandi the audio tracker cannot, or `--refine` to lock a fixed grid to the hinted tempo and smoothly refine it to the onsets — best for steady syncopated grooves that mislead both trackers), `verify` (render + per-bar chroma comparison against the recording), `consensus` (cross-check against pitch-shifted re-transcriptions), and `clean`/`post` (the cleanup-score machinery).

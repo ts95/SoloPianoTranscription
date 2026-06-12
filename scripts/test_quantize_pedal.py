@@ -59,8 +59,40 @@ def test_pedal_marks_from_mid():
         assert summary["pedal_marks"] == 1, (
             f"expected 1 pedal mark for the single CC64 region, "
             f"got {summary['pedal_marks']} (note: {summary.get('pedal_note')})")
-        assert "<pedal" in open(out).read(), "no <pedal> direction in MusicXML"
-    print("ok: pedal marks engraved from the MIDI's CC64")
+        assert_pedal_on_bass_staff(open(out).read())
+
+        # the re-bar path (cleanup flow) exports one merged 2-staff part —
+        # there the pedal directions must carry <staff>2</staff>
+        out2 = os.path.join(d, "t.rebar.musicxml")
+        r = subprocess.run([PY, SCRIPT, "post", xml, out2, "--time-sig", "4/4",
+                            "--pedal-from", mid],
+                           capture_output=True, text=True, check=True)
+        assert json.loads(r.stdout)["pedal_marks"] == 1
+        assert_pedal_on_bass_staff(open(out2).read())
+    print("ok: pedal engraved as bass-staff lines from the MIDI's CC64")
+
+
+def assert_pedal_on_bass_staff(xml_text):
+    """Pedal must be engraved as a line and attributed to the bass staff,
+    whatever the part structure (merged 2-staff part or two parts)."""
+    import re
+    assert "<pedal" in xml_text, "no <pedal> direction in MusicXML"
+    assert 'line="yes"' in xml_text, "pedal not engraved as a line"
+    for m in re.finditer(r"<direction[^>]*>(?:(?!</direction>).)*?<pedal",
+                         xml_text, re.S):
+        block = xml_text[m.start():xml_text.index("</direction>", m.start())]
+        staff = re.search(r"<staff>(\d+)</staff>", block)
+        if staff:  # merged 2-staff part: explicit staff attribution
+            assert staff.group(1) == "2", (
+                f"pedal direction on staff {staff.group(1)}, not bass: {block[:200]}")
+        else:      # two single-staff parts: must sit in the low (bass) part
+            part_start = xml_text.rfind("<part ", 0, m.start())
+            part_end = xml_text.find("</part>", m.start())
+            octaves = [int(o) for o in re.findall(
+                r"<octave>(\d)</octave>", xml_text[part_start:part_end])]
+            assert octaves and max(octaves) <= 4, (
+                "pedal direction in a part that is not the bass staff "
+                f"(octaves {sorted(set(octaves))})")
 
 
 def test_pedal_smear_not_engraved():

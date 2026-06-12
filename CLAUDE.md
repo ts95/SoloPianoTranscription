@@ -25,7 +25,8 @@ output/<slug>/
 ├── <slug>.mid        # Transkun transcription (performance timing, unquantized)
 ├── <slug>.musicxml   # quantized score (interchange format)
 ├── <slug>.mscz       # native MuseScore 4 file (for direct editing)
-├── <slug>.cleaned.*  # cleanup-score products (mid/musicxml/mscz) — originals stay untouched
+├── <slug>.pdf        # printable score (from .mscz) — also the visual-inspection artifact
+├── <slug>.cleaned.*  # cleanup-score products (mid/musicxml/mscz/pdf) — originals stay untouched
 ├── beats.json        # audio beat-tracking (librosa) — drives rubato-aware quantization
 ├── clean_report.json # machine summary of the MIDI clean pass
 ├── verify.json       # per-bar score-vs-recording similarity (chroma DTW)
@@ -59,6 +60,7 @@ mv 'output/<slug>/<slug>.prepared.wav' 'output/<slug>/<slug>.wav'
   --pedal-from 'output/<slug>/<slug>.mid'
 MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 "$MSCORE" 'output/<slug>/<slug>.musicxml' -o 'output/<slug>/<slug>.mscz'
+"$MSCORE" 'output/<slug>/<slug>.mscz' -o 'output/<slug>/<slug>.pdf'
 ```
 
 ## Skills
@@ -73,6 +75,7 @@ MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 
 - **Articulation question (rule)**: before starting transcription of a new piece, explicitly ask the user whether to diverge from the legato default. Legato default = note durations fill to the next onset (`quantize` does this automatically). If the user opts out, pass `quantize --no-legato-fill` and use the MIDI's performed durations to decide musically where staccato/other articulation marks belong (short raw durations against long gaps = detached playing). Either way `quantize` is pedal-aware: fill never bridges a same-staff silence longer than ~a beat (under pedal the note holds to the beat boundary; pedal-up it keeps the performed length), and pedal-carried rings never become sustained second voices — Transkun durations under pedal are acoustic smear, and engraving them makes drones, voice stacks, and padding-rest spray.
 - **Balanced measures (rule)**: every measure and every voice must sum exactly to the bar duration — notes plus explicit rests, never invisible gaps. `quantize` and `post` print a `lint` block (unbalanced-measure count + printed-accidental ratio) with every generated score; a verdict other than "ok" must be fixed before delivering.
+- **Visual inspection (rule)**: every final `.mscz` gets a PDF (`"$MSCORE" <file>.mscz -o <file>.pdf`), and the PDF must be inspected visually (Read the PDF pages directly) before delivery. Look for what the lint cannot see: marks floating mid-system or doubled, pedal lines not under the bass staff, colliding elements, multi-voice clutter / padding-rest spray, drone durations that halt the texture, fragmented beaming. Fix what is decidable and re-export; flag the rest.
 
 After producing any score, inspect it for statistical outliers — transcription and quantization errors look like values that don't belong in the piece's rhythm profile:
 

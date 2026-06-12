@@ -48,12 +48,17 @@ Add `--key 'D major'` / `--time-sig '4/4'` when known. **Metadata rule**: always
 ```bash
 MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 "$MSCORE" '<output>.musicxml' -o '<output>.mscz'
+"$MSCORE" '<output>.mscz' -o '<output>.pdf'
 ```
 
-- `mscore` often prints Qt/plugin warnings to stderr even when it succeeds. Judge success by the exit code and by the output file existing and being non-empty.
+- `mscore` often prints Qt/plugin warnings to stderr even when it succeeds. Judge success by the exit code and by the output file existing and being non-empty. It occasionally aborts with exit 134 (crash-reporter noise on shutdown) — retry once or twice.
 - Use `.musicxml` (uncompressed) rather than `.mxl` so the result is diffable and inspectable.
 
-Report both output paths and suggest:
+## 4. Visual inspection (rule)
+
+Read the generated PDF (the Read tool renders PDF pages directly; sample at least the first page, a busy middle page, and the final page). Look for what lint cannot see: marks floating mid-system or doubled, pedal lines not under the bass staff, colliding elements, multi-voice clutter / padding-rest spray, drone durations that halt the texture, fragmented beaming. Fix what is decidable (then re-export .mscz and .pdf and re-inspect); flag the rest to the user.
+
+Report the output paths (musicxml, mscz, pdf) and suggest:
 
 - running `/cleanup-score` for the full treatment (artifact removal, ground-truth key/meter, pedal, dynamics, verify-by-ear report);
 - opening the `.mscz` in MuseScore 4 for by-ear cleanup (durations are conservatively short — capped at the next onset — and the hand split is a single pitch threshold).

@@ -1783,16 +1783,48 @@ def cmd_post(args):
         elif not (qps or warp):
             changes["pedal_note"] = "no timing scale available; cannot map pedal times to offsets"
         else:
-            flat_notes = sorted(score.recurse().notes, key=lambda n: n.getOffsetInHierarchy(score))
+            # Engrave as modern pedal lines anchored to the bass staff. Symbol
+            # pairs (Ped./*) anchored to whichever staff a note happened to be
+            # in float mid-system, double up when two regions catch the same
+            # note, and turn dense per-bar pedaling into visual noise.
+            bottom = sorted(parts, key=avg_pitch)[0] if len(parts) == 2 else None
+            bass_pool = (sorted(bottom.recurse().notes,
+                                key=lambda n: n.getOffsetInHierarchy(score))
+                         if bottom is not None else [])
+            all_pool = sorted(score.recurse().notes,
+                              key=lambda n: n.getOffsetInHierarchy(score))
+            prev_anchor = None
             for r in regions:
                 start_q, end_q = to_q(r["down"]), to_q(r["up"])
-                inside = [n for n in flat_notes
-                          if start_q - 0.5 <= n.getOffsetInHierarchy(score) <= end_q]
-                if len(inside) >= 1:
-                    pmark = expressions.PedalMark()
-                    pmark.addSpannedElements([inside[0], inside[-1]])
-                    score.insert(0, pmark)
-                    changes["pedal_marks"] += 1
+                inside = [n for n in bass_pool
+                          if start_q - 0.25 <= n.getOffsetInHierarchy(score) < end_q]
+                if not inside:
+                    # no bass note under this region: snap to the nearest one
+                    # (a slightly shifted mark beats a floating mid-system one
+                    # anchored to a treble note; with none nearby, skip)
+                    near = [n for n in bass_pool
+                            if abs(n.getOffsetInHierarchy(score) - start_q) <= 2]
+                    inside = ([min(near, key=lambda n:
+                               abs(n.getOffsetInHierarchy(score) - start_q))]
+                              if near else [])
+                if not inside:
+                    continue
+                anchor = (inside[0], inside[-1])
+                if anchor == prev_anchor or (len(inside) == 1
+                                             and prev_anchor
+                                             and inside[0] is prev_anchor[1]):
+                    continue  # this region adds no new span (same anchors)
+                pmark = expressions.PedalMark()
+                pmark.pedalType = expressions.PedalType.Sustain
+                pmark.pedalForm = expressions.PedalForm.Line
+                pmark.placement = "below"
+                pmark.addSpannedElements(
+                    [inside[0]] if inside[0] is inside[-1] else [inside[0], inside[-1]])
+                # spanners live in the staff they mark: at score level the
+                # exported direction carries no <staff> and floats mid-system
+                (bottom if bottom is not None else score).insert(0, pmark)
+                prev_anchor = anchor
+                changes["pedal_marks"] += 1
 
     # Dynamics from MIDI velocities: level marks at changes, hairpins on trends.
     if args.dynamics_from:

@@ -49,9 +49,12 @@ Follow the `midi-to-musicxml` skill (exports both formats). **Never feed the `.m
   --pedal-from 'output/<slug>/<slug>.mid'
 MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 "$MSCORE" 'output/<slug>/<slug>.musicxml' -o 'output/<slug>/<slug>.mscz'
+"$MSCORE" 'output/<slug>/<slug>.mscz' -o 'output/<slug>/<slug>.pdf'
 ```
 
 Check the quantize summary: `score_seconds_at_bpm` must be within a few percent of `audio_seconds`, otherwise the BPM is wrong — try another candidate.
+
+**Visual inspection (rule)**: Read the PDF (at least first, a busy middle, and final page) and look for obvious engraving issues — floating/doubled marks, pedal not under the bass staff, collisions, voice clutter, rest spray, drone durations. Fix what is decidable, re-export, re-inspect; flag the rest.
 
 ## Wrap up
 
