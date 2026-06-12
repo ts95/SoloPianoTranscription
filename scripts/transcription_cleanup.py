@@ -373,13 +373,14 @@ def cmd_post(args):
     # Move clearly out-of-range notes to the other staff (piano = two PartStaffs).
     # Must happen before re-barring: makeMeasures rebuilds the measures consistently;
     # inserting into already-voiced measures afterwards produces content mscore rejects.
+    def avg_pitch(part):
+        ps = [p.midi for n in part.recurse().notes for p in
+              (n.pitches if hasattr(n, "pitches") else [n.pitch])]
+        return sum(ps) / len(ps) if ps else 60
+
     parts = list(score.parts)
     treble = None
     if len(parts) == 2:
-        def avg_pitch(part):
-            ps = [p.midi for n in part.recurse().notes for p in
-                  (n.pitches if hasattr(n, "pitches") else [n.pitch])]
-            return sum(ps) / len(ps) if ps else 60
         treble, bass = sorted(parts, key=avg_pitch, reverse=True)
     if treble is not None and not args.no_rehand:
         for n in list(treble.recurse().notes):
@@ -395,26 +396,40 @@ def cmd_post(args):
 
     # MuseScore 4's MIDI import ignores time-signature meta events, so re-bar here:
     # same note offsets/durations (the quantization grid is beat-level), new grouping.
+    # Build a fresh Score from the re-barred parts — mutating the original PartStaffs
+    # in place corrupts the two-staff merge at MusicXML export (overfull measures,
+    # mscore exit 40).
     if args.time_sig:
-        ts_count = 0
+        from music21 import layout, stream as m21stream
+        new_parts = []
         for part in list(score.parts):
             flat = part.flatten()
             for old in list(flat.getElementsByClass(meter.TimeSignature)):
                 flat.remove(old)
-            flat.insert(0, meter.TimeSignature(args.time_sig))
+            ts = meter.TimeSignature(args.time_sig)
+            flat.insert(0, ts)
+            # Split notes at the new barlines while the stream is still flat —
+            # makeTies on overlapping (unvoiced) measure content mis-splits.
+            bar_ql = ts.barDuration.quarterLength
+            bar_offsets = [i * bar_ql for i in range(1, int(flat.highestTime // bar_ql) + 1)]
+            flat.sliceAtOffsets(bar_offsets, addTies=True, inPlace=True)
+            # No manual makeVoices here: voices built with fillGaps=False export
+            # broken <forward> arithmetic (overfull measures, mscore exit 40);
+            # music21's own export-time notation pass voices overlaps correctly.
             rebarred = flat.makeMeasures()
-            rebarred.makeTies(inPlace=True)  # split notes crossing the new barlines
-            for m in rebarred.getElementsByClass("Measure"):
-                if not m.hasVoices():
-                    try:
-                        m.makeVoices(inPlace=True, fillGaps=False)
-                    except Exception:
-                        pass
-            part.removeByClass("Measure")
+            ps = m21stream.PartStaff(id=part.id)
             for el in rebarred:
-                part.insert(el.offset, el)
-            ts_count += 1
-        changes["rebarred"] = f"{args.time_sig} across {ts_count} staves"
+                ps.insert(el.offset, el)
+            new_parts.append(ps)
+        new_score = m21stream.Score()
+        for ps in new_parts:
+            new_score.insert(0, ps)
+        if len(new_parts) == 2:
+            new_score.insert(0, layout.StaffGroup(new_parts, symbol="brace", barTogether=True))
+        score = new_score
+        parts = new_parts
+        treble = sorted(parts, key=avg_pitch, reverse=True)[0] if len(parts) == 2 else None
+        changes["rebarred"] = f"{args.time_sig} across {len(new_parts)} staves"
 
     if args.key:
         k = m21key.Key(args.key.split()[0], args.key.split()[1] if " " in args.key else "major")
@@ -432,19 +447,42 @@ def cmd_post(args):
                         p.step, p.accidental, p.octave = enh.step, enh.accidental, enh.octave
                         changes["respelled"] += 1
 
+    # Seconds -> quarterLength scale. MuseScore's MIDI import picks its own
+    # quantization grid (it ignores tempo meta just like time signatures), so
+    # derive the true scale from the score itself rather than any tempo number.
+    qps = None
+    if args.dynamics_from:
+        pm_timing = pretty_midi.PrettyMIDI(args.dynamics_from)
+        end_t = pm_timing.get_end_time()
+        if end_t > 0 and score.highestTime > 0:
+            qps = float(score.highestTime) / end_t
+
+    # Set a metronome mark matching the grid, so playback matches the recording.
+    if qps:
+        from music21 import tempo as m21tempo
+        for mm in list(score.recurse().getElementsByClass(m21tempo.MetronomeMark)):
+            if mm.activeSite is not None:
+                mm.activeSite.remove(mm)
+        target = parts[0] if parts else score
+        first_m = target.getElementsByClass("Measure").first()
+        (first_m if first_m is not None else target).insert(
+            0, m21tempo.MetronomeMark(number=round(qps * 60)))
+        changes["tempo_marked_bpm"] = round(qps * 60)
+
     # Pedal markings from CC64 regions captured by the clean pass.
     if args.pedal_from:
         with open(args.pedal_from) as f:
             clean_report = json.load(f)
         regions = clean_report.get("pedal_regions", [])
         tempo = clean_report.get("tempo_bpm")
+        if qps is None and tempo:
+            qps = tempo / 60.0  # fallback when --dynamics-from wasn't given
         if not hasattr(expressions, "PedalMark"):
             changes["pedal_note"] = (f"{len(regions)} pedal regions in report, but this music21 "
                                      "lacks PedalMark — add pedal manually in MuseScore")
-        elif not tempo:
-            changes["pedal_note"] = "no tempo in clean report; cannot map pedal times to offsets"
+        elif not qps:
+            changes["pedal_note"] = "no timing scale available; cannot map pedal times to offsets"
         else:
-            qps = tempo / 60.0  # quarterLengths per second
             flat_notes = sorted(score.recurse().notes, key=lambda n: n.getOffsetInHierarchy(score))
             for r in regions:
                 start_q, end_q = r["down"] * qps, r["up"] * qps
@@ -458,13 +496,10 @@ def cmd_post(args):
 
     # Dynamics from MIDI velocities: level marks at changes, hairpins on trends.
     if args.dynamics_from:
-        pm = pretty_midi.PrettyMIDI(args.dynamics_from)
-        tempi = pm.get_tempo_changes()[1]
-        if len(tempi) == 0:
-            changes["dynamics_note"] = "no tempo in MIDI; cannot map times to offsets"
+        if not qps:
+            changes["dynamics_note"] = "no timing scale available; cannot map times to offsets"
         else:
-            qps = float(tempi[0]) / 60.0
-            profile = velocity_profile(pm)
+            profile = velocity_profile(pm_timing)
             hairpins = find_hairpins(profile)
             anchor_part = treble if treble is not None else score
             anchored = sorted(anchor_part.recurse().notes,
