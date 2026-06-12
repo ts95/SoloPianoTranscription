@@ -850,6 +850,29 @@ def cmd_quantize(args):
                 return c
         return grid
 
+    # Pedal-down intervals in the beat domain. Under pedal the transcriber
+    # reports acoustic ring, not finger holds — duration decisions below must
+    # not engrave pedal smear as held notes (the pedal marks carry the
+    # sustain; engraving it stacks false voices and sprays padding rests).
+    pedal_iv = []
+    _down = None
+    for c in sorted((c for inst in pm.instruments for c in inst.control_changes
+                     if c.number == 64), key=lambda c: c.time):
+        if c.value >= 64 and _down is None:
+            _down = c.time
+        elif c.value < 64 and _down is not None:
+            pedal_iv.append((to_ql(_down), to_ql(c.time)))
+            _down = None
+    if _down is not None:
+        pedal_iv.append((to_ql(_down), to_ql(notes[-1].end) + 4))
+
+    def pedal_covered(a, b, frac=0.6):
+        """True when >= frac of the beat-interval [a, b] has the pedal down."""
+        if b <= a:
+            return False
+        cov = sum(max(0, min(b, y) - max(a, x)) for x, y in pedal_iv)
+        return cov / (b - a) >= frac
+
     # Cluster near-simultaneous onsets per hand first: rolled/arpeggiated chord
     # attacks spread 10-80 ms, and snapping each note separately engraves a
     # chain of 32nds instead of one chord.
@@ -1034,25 +1057,37 @@ def cmd_quantize(args):
                 te.style.fontStyle = "italic"
                 marks.append((beat_k, te))
         items, capped, sustained, filled, arpeggiated = [], 0, 0, 0, 0
+        import math as _math
+        LONG_GAP = Fraction(5, 4)  # same-staff silence longer than this is
+        # musical space (the hand left), not a legato articulation gap
+        global_last_on = max(to_ql(n.start) for n in notes)
         for i, off in enumerate(onsets):
             group = slots[off]
             raw_dur = max(to_ql(n.end) - off for n in group)
             cap = onsets[i + 1] - off if i + 1 < len(onsets) else raw_dur
             pitches = sorted({n.pitch for n in group})
             dur = min(raw_dur, cap)
+            last = i + 1 >= len(onsets)
+            beat_cap = min(cap, Fraction(_math.ceil(off + 1)) - off)
             # Sustain exception: a lone melody/bass note that clearly rings on
             # (>=1.5x the gap) over later onsets in other registers keeps its
-            # length — it becomes voice 2 of the staff at re-barring. The pedal
-            # marks carry whatever sustain this still clips.
+            # length — it becomes voice 2 of the staff at re-barring. Only for
+            # finger-held rings: a pedal-carried ring is acoustic smear, and
+            # the pedal marks already convey it.
             if (len(pitches) == 1 and raw_dur >= cap * Fraction(3, 2)
                     and not any(abs(p - pitches[0]) < 3
                                 for j in range(i + 1, len(onsets))
                                 if onsets[j] < off + raw_dur
-                                for p in {m.pitch for m in slots[onsets[j]]})):
+                                for p in {m.pitch for m in slots[onsets[j]]})
+                    and not pedal_covered(off + cap, off + raw_dur)):
                 dur = raw_dur
                 sustained += 1
             elif raw_dur > cap:
                 capped += 1
+                if not last and cap > LONG_GAP and pedal_covered(off + 1, off + cap):
+                    # ring across a long same-staff silence is pedal wash:
+                    # hold to the next beat boundary, rest the remainder
+                    dur = beat_cap
             elif not args.no_legato_fill:
                 # Legato assumption (default): every note fills the gap to the
                 # next same-hand onset, however early the key was released —
@@ -1060,8 +1095,19 @@ def cmd_quantize(args):
                 # the sustain, and flooring performed lengths leaves 32nd-rest
                 # confetti. --no-legato-fill keeps performed lengths for
                 # articulation-faithful engraving (staccato etc. by ear).
+                # Long gaps are never bridged: a stab before beats of silence
+                # holds to the next beat boundary if the pedal carries it,
+                # else keeps its performed length (real silence stays rests).
                 filled += 1
-                dur = cap
+                # a staff-final note only keeps its ring near the piece's
+                # actual end — mid-piece it is pedal smear like any other
+                ending = off + 2 >= global_last_on
+                if ending or cap <= LONG_GAP:
+                    dur = cap
+                elif pedal_covered(off, off + max(dur, beat_cap)):
+                    # under pedal the performed length is smear — hold to the
+                    # beat boundary; pedal-up keeps the true finger hold
+                    dur = beat_cap
             # Keep durations metrically consistent with their beat's division:
             # ternary-beat notes stay inside the beat (tuplet values only);
             # binary durations may not END inside a ternary beat.
