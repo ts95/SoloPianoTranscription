@@ -67,7 +67,7 @@ MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 
 - `transcribe` — full pipeline from a YouTube URL; use for "transcribe this video" requests
 - `download-audio` — stage 1 only
-- `audio-to-midi` — stage 2 only (also works on local audio files the user provides)
+- `audio-to-midi` — stage 2 only (also works on local audio files the user provides). When the user's request is for a MIDI deliverable, always follow with `cleanup-score` in MIDI-only mode — a requested MIDI is delivered cleaned, never raw
 - `midi-to-musicxml` — stage 3 only (exports both .musicxml and .mscz)
 - `cleanup-score` — post-pipeline cleanup: web ground-truth lookup (key/meter), artifact removal, notation repair, velocity-derived dynamics/hairpins, `CLEANUP_NOTES.md` with verify-by-ear flags. Changes only what's decidable from data; never overwrites originals. Supports MIDI-only mode (steps 1–3, `.cleaned.mid` + notes, no MusicXML/.mscz) when the user wants just a cleaned MIDI.
 

@@ -19,6 +19,8 @@ Input: a path to an audio file (wav preferred; mp3 works). Pipeline convention: 
 
 Afterwards verify the `.mid` exists and is non-empty (`ls -lh`), and report the path.
 
+**Cleaned deliverable (rule)**: when the user's request is for a MIDI (rather than sheet music), the deliverable is the **cleaned** MIDI, not the raw transcription — always continue with the `cleanup-score` skill in MIDI-only mode (ground-truth lookup, analyze, clean → `<slug>.cleaned.mid` + `CLEANUP_NOTES.md`; add `--tempo-map` when the performance has rubato). The raw `.mid` stays untouched alongside. Skip this only when the user explicitly asks for the raw transcription.
+
 ## Quality expectations
 
 Transkun is trained on solo piano. Warn the user that results degrade with: other instruments or vocals in the mix, heavy reverb/noise, or low-bitrate audio. The output MIDI has performance timing (unquantized) — that's expected; quantization happens at the MusicXML stage.
