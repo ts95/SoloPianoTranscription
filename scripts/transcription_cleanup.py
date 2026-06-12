@@ -908,6 +908,159 @@ def cmd_beats(args):
     return 0
 
 
+def cmd_verify(args):
+    """Objective score-vs-recording check: render the score with mscore, DTW-align
+    CQT chroma of render and recording, score per-bar cosine similarity, and
+    cross-check repeated sections. Writes verify.json; worst bars belong in
+    CLEANUP_NOTES so listening time goes where the score is most wrong."""
+    import subprocess
+    import tempfile
+    import warnings
+    from music21 import converter as m21converter
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        import librosa
+
+    score = m21converter.parse(args.score)
+    mm = score.recurse().getElementsByClass("MetronomeMark").first()
+    bpm = float(mm.number) if mm is not None else 120.0
+    ts = score.recurse().getElementsByClass("TimeSignature").first()
+    bar_ql = float(ts.barDuration.quarterLength) if ts is not None else 4.0
+    parts = list(score.parts)
+    n_bars = max(len(p.getElementsByClass("Measure")) for p in parts)
+    bar_pitch_sets = []
+    for k in range(1, n_bars + 1):
+        pcs = set()
+        for p in parts:
+            m = p.measure(k)
+            if m is not None:
+                for n in m.recurse().notes:
+                    for pt in (n.pitches if hasattr(n, "pitches") else [n.pitch]):
+                        pcs.add(pt.midi)
+        bar_pitch_sets.append(pcs)
+
+    with tempfile.TemporaryDirectory() as td:
+        render_wav = f"{td}/render.wav"
+        res = subprocess.run([args.mscore, args.score, "-o", render_wav],
+                             capture_output=True)
+        if res.returncode != 0 or not __import__("os").path.getsize(render_wav):
+            print(json.dumps({"error": f"mscore render failed ({res.returncode})"}))
+            return 1
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            HOP, SR = 2048, 22050
+            yr, _ = librosa.load(render_wav, sr=SR, mono=True)
+            ya, _ = librosa.load(args.audio, sr=SR, mono=True)
+            cr = librosa.feature.chroma_cqt(y=yr, sr=SR, hop_length=HOP)
+            ca = librosa.feature.chroma_cqt(y=ya, sr=SR, hop_length=HOP)
+            D, wp = librosa.sequence.dtw(X=cr, Y=ca)
+    wp = wp[::-1]  # (render_frame, audio_frame), ascending
+    audio_for_render = {}
+    for rf, af in wp:
+        audio_for_render.setdefault(int(rf), []).append(int(af))
+
+    fps = SR / HOP
+    bar_seconds_render = bar_ql * 60.0 / bpm
+    bars = []
+    for k in range(n_bars):
+        f0 = int(k * bar_seconds_render * fps)
+        f1 = max(f0 + 1, int((k + 1) * bar_seconds_render * fps))
+        afs = sorted(a for f in range(f0, min(f1, cr.shape[1]))
+                     for a in audio_for_render.get(f, []))
+        if not afs:
+            continue
+        a0, a1 = afs[0], max(afs[-1] + 1, afs[0] + 1)
+        vr = cr[:, f0:min(f1, cr.shape[1])].mean(axis=1)
+        va = ca[:, a0:min(a1, ca.shape[1])].mean(axis=1)
+        denom = (np.linalg.norm(vr) * np.linalg.norm(va))
+        sim = float(vr @ va / denom) if denom > 0 else 0.0
+        stretch = ((a1 - a0) / (f1 - f0)) if f1 > f0 else 1.0
+        bars.append({"bar": k + 1, "similarity": round(sim, 3),
+                     "audio_time_s": round(a0 / fps, 1),
+                     "audio_mmss": f"{int(a0 / fps) // 60}:{int(a0 / fps) % 60:02d}",
+                     "stretch": round(stretch, 2),
+                     "chroma": va})
+    med_stretch = statistics.median(b["stretch"] for b in bars) if bars else 1.0
+    for b in bars:
+        b["drift_suspect"] = abs(b["stretch"] - med_stretch) > 0.2 * med_stretch
+
+    # Repeated-section cross-check: bars whose AUDIO is near-identical should
+    # contain the same pitch CLASSES (chroma is octave-blind, so exact-pitch
+    # comparison would flag mere figuration changes); disagreement localizes
+    # transcription errors.
+    repeat_flags = []
+    for i in range(len(bars)):
+        for j in range(i + 4, len(bars)):  # skip trivial neighbors
+            vi, vj = bars[i]["chroma"], bars[j]["chroma"]
+            denom = np.linalg.norm(vi) * np.linalg.norm(vj)
+            if denom == 0 or vi @ vj / denom < 0.99:
+                continue
+            si = {p % 12 for p in bar_pitch_sets[bars[i]["bar"] - 1]}
+            sj = {p % 12 for p in bar_pitch_sets[bars[j]["bar"] - 1]}
+            if not si and not sj:
+                continue
+            jac = len(si & sj) / len(si | sj) if (si | sj) else 1.0
+            if jac < 0.6:
+                repeat_flags.append({
+                    "bars": [bars[i]["bar"], bars[j]["bar"]],
+                    "audio_similarity": round(float(vi @ vj / denom), 3),
+                    "pitch_class_overlap": round(jac, 2),
+                    "hint": "audio repeats but the transcribed pitch content differs — "
+                            "one of the two bars is probably wrong"})
+    repeat_flags = repeat_flags[:15]
+
+    for b in bars:
+        del b["chroma"]
+    ranked = sorted(bars, key=lambda b: b["similarity"])
+    report = {
+        "score": args.score,
+        "audio": args.audio,
+        "render_bpm": bpm,
+        "bars_compared": len(bars),
+        "median_similarity": round(statistics.median(b["similarity"] for b in bars), 3)
+        if bars else None,
+        "worst_bars": ranked[:args.worst],
+        "drift_suspects": [b["bar"] for b in bars if b["drift_suspect"]],
+        "repeat_inconsistencies": repeat_flags,
+        "note": "similarity is chroma-based: octave errors and voicing changes are "
+                "partly invisible; use worst_bars to prioritize listening, not as proof",
+    }
+    if args.output:
+        with open(args.output, "w") as f:
+            json.dump(report, f, indent=2)
+    slim = dict(report)
+    slim["worst_bars"] = report["worst_bars"][:5]
+    print(json.dumps(slim, indent=2))
+    return 0
+
+
+def cmd_consensus(args):
+    """Cross-check a transcription against re-transcriptions of pitch-shifted
+    audio: notes of the primary MIDI with no match (same pitch, onset within
+    tolerance) in EVERY alternative are reported as suspects — flag, don't delete."""
+    primary = all_notes(pretty_midi.PrettyMIDI(args.primary))
+    alts = []
+    for spec in args.alt:
+        path, semis = (spec.rsplit(":", 1) + ["0"])[:2] if ":" in spec else (spec, "0")
+        pm = pretty_midi.PrettyMIDI(path)
+        shift = int(semis)
+        alts.append([(n.pitch - shift, n.start) for n in all_notes(pm)])
+    suspects = []
+    for n in primary:
+        ok = all(any(p == n.pitch and abs(t - n.start) <= args.tolerance
+                     for p, t in alt) for alt in alts)
+        if not ok:
+            suspects.append(note_dict(n))
+    report = {"primary": args.primary, "alternatives": len(alts),
+              "notes": len(primary), "suspects_count": len(suspects),
+              "suspects": suspects[:100],
+              "note": "suspects failed consensus across pitch-shifted re-transcriptions; "
+                      "verify by ear before removing anything"}
+    print(json.dumps(report, indent=2))
+    return 0
+
+
 DYNAMIC_LEVELS = [(30, "pp"), (45, "p"), (60, "mp"), (75, "mf"), (90, "f"), (200, "ff")]
 
 
@@ -1268,6 +1421,25 @@ def main():
     q.add_argument("--time-sig", help='e.g. "3/4" — inserts the time signature and '
                                       'sets the bar length for downbeat inference')
     q.set_defaults(fn=cmd_quantize)
+
+    v = sub.add_parser("verify", help="render the score and compare to the recording "
+                                      "per bar (chroma DTW) — targets listening time")
+    v.add_argument("score", help="the .cleaned.musicxml (must carry a metronome mark)")
+    v.add_argument("audio", help="the original recording (wav/mp3)")
+    v.add_argument("--output", help="write the full JSON report here (verify.json)")
+    v.add_argument("--worst", type=int, default=10, help="how many worst bars to list")
+    v.add_argument("--mscore", default="/Applications/MuseScore 4.app/Contents/MacOS/mscore")
+    v.set_defaults(fn=cmd_verify)
+
+    n = sub.add_parser("consensus", help="flag notes missing from pitch-shifted "
+                                         "re-transcriptions (suspects, never deletions)")
+    n.add_argument("primary", help="the transcription under test (.mid)")
+    n.add_argument("alt", nargs="+",
+                   help='alternative transcription(s), "path.mid:SEMITONES" where '
+                        "SEMITONES is the shift applied to the audio (e.g. alt_up.mid:1)")
+    n.add_argument("--tolerance", type=float, default=0.05,
+                   help="onset match window in seconds (default 0.05)")
+    n.set_defaults(fn=cmd_consensus)
 
     p = sub.add_parser("post", help="music21 notation fixes on quantized MusicXML")
     p.add_argument("input")

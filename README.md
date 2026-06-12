@@ -57,7 +57,7 @@ Each stage is also available as its own skill, useful for re-running a single st
 - `/download-audio <youtube-url>` — download + prepare audio (normalized 44.1 kHz wav for transcription, mp3 for listening)
 - `/audio-to-midi <audio-file>` — transcribe audio to MIDI with Transkun
 - `/midi-to-musicxml <midi-file>` — quantize MIDI to MusicXML at a chosen BPM and convert to native MuseScore (.mscz)
-- `/cleanup-score output/<slug>/` — AI cleanup of a transcribed score: looks up the piece's real key/meter/tempo online, removes transcription artifacts (ghost notes at piano-partial intervals, duplicates — pedal- and harmony-aware, so in-key consonant notes are flagged rather than deleted), re-quantizes onto the verified BPM grid, repairs notation (key-aware and melodic-direction-aware enharmonic spelling, modulation detection, staff assignment, pedal marks), derives dynamics and cresc./dim. hairpins from MIDI velocities, and writes `CLEANUP_NOTES.md` flagging everything that needs verification by ear. Can also stop at a cleaned `.mid` (no MusicXML/MuseScore files) if that's all you want
+- `/cleanup-score output/<slug>/` — AI cleanup of a transcribed score: looks up the piece's real key/meter/tempo online, removes transcription artifacts (ghost notes at piano-partial intervals, duplicates — pedal- and harmony-aware, so in-key consonant notes are flagged rather than deleted), re-quantizes onto the verified BPM grid, repairs notation (key-aware and melodic-direction-aware enharmonic spelling, modulation detection, staff assignment, pedal marks), derives dynamics and cresc./dim. hairpins from MIDI velocities, renders the result and compares it bar-by-bar against the recording (chroma DTW — worst bars, barline drift, and "this bar repeats but the notes differ" inconsistencies become listening priorities), and writes `CLEANUP_NOTES.md` flagging everything that needs verification by ear. Can also stop at a cleaned `.mid` (no MusicXML/MuseScore files) if that's all you want
 
 ### Running the stages manually
 
@@ -79,7 +79,7 @@ MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 "$MSCORE" output/<slug>/<slug>.musicxml -o output/<slug>/<slug>.mscz
 ```
 
-`transcription_cleanup.py` also provides `analyze` (read-only JSON report: key/meter/tempo estimates, artifact candidates, rubato, fast runs), `beats` (librosa beat tracking of the recording, seeded with a known BPM), and `clean`/`post` (the cleanup-score machinery).
+`transcription_cleanup.py` also provides `analyze` (read-only JSON report: key/meter/tempo estimates, artifact candidates, rubato, fast runs), `beats` (librosa beat tracking of the recording, seeded with a known BPM), `verify` (render + per-bar chroma comparison against the recording), `consensus` (cross-check against pitch-shifted re-transcriptions), and `clean`/`post` (the cleanup-score machinery).
 
 ## Limitations and notes
 

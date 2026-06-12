@@ -11,7 +11,7 @@ Pipeline for transcribing solo piano performances from YouTube into editable she
 - MuseScore CLI path (constant): `/Applications/MuseScore 4.app/Contents/MacOS/mscore`
 - ffmpeg is at `/opt/homebrew/bin/ffmpeg` (needed by yt-dlp).
 - If `.venv` doesn't exist: `python3.11 -m venv .venv && .venv/bin/pip install transkun yt-dlp music21 'llvmlite==0.42.0' 'numba==0.59.1' librosa` (pulls PyTorch, ~2 GB; llvmlite/numba are pinned because newer releases ship no x86_64 macOS wheels).
-- `scripts/transcription_cleanup.py` (run with `.venv/bin/python`) provides `analyze` / `clean` / `beats` / `quantize` / `post` subcommands used by the pipeline and `cleanup-score` skills.
+- `scripts/transcription_cleanup.py` (run with `.venv/bin/python`) provides `analyze` / `clean` / `beats` / `quantize` / `post` / `verify` / `consensus` subcommands used by the pipeline and `cleanup-score` skills.
 - `scripts/prepare_audio.sh <in> <out.wav>` — two-pass linear loudness normalization + 44.1 kHz resample; run on all audio before Transkun.
 
 ## Output layout
@@ -28,6 +28,7 @@ output/<slug>/
 ├── <slug>.cleaned.*  # cleanup-score products (mid/musicxml/mscz) — originals stay untouched
 ├── beats.json        # audio beat-tracking (librosa) — drives rubato-aware quantization
 ├── clean_report.json # machine summary of the MIDI clean pass
+├── verify.json       # per-bar score-vs-recording similarity (chroma DTW)
 └── CLEANUP_NOTES.md  # what was changed + what to verify by ear
 ```
 
@@ -72,6 +73,7 @@ After producing any score, inspect it for statistical outliers — transcription
 - The same applies to rests: isolated tiny rests punched into an otherwise continuous 16th-note texture are quantization gaps (duration snapped down past the next onset), not phrasing.
 - Judge outliers in context: a 32nd-note run in one contiguous passage is likely a real ornament/flourish; the same values scattered randomly one-at-a-time through the piece are noise.
 - A tuplet explosion, or a histogram dominated by values one "level" off from what the piece sounds like, means the BPM/grid was wrong — requantize rather than patching notes.
+- After cleanup, run `verify` (renders the score, DTW-aligns chroma against the recording): its `worst_bars`, `drift_suspects`, and `repeat_inconsistencies` are the listening priorities for CLEANUP_NOTES. Chroma is octave-blind — a guide, not proof.
 
 ## Docs
 

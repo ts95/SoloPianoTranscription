@@ -89,7 +89,27 @@ Write targeted music21 snippets against specific measures to repair what you're 
 
 ## 6. Verify
 
-- `.cleaned.musicxml` has the chosen `<fifths>`/`<beats>` values; note-type histogram improved vs the raw conversion; mscore exited 0 for the `.mscz`; originals untouched.
+Structural checks: `.cleaned.musicxml` has the chosen `<fifths>`/`<beats>` values; note-type histogram improved vs the raw conversion; mscore exited 0 for the `.mscz`; originals untouched.
+
+Then the objective check — render the score and compare it to the recording bar by bar:
+
+```bash
+.venv/bin/python scripts/transcription_cleanup.py verify \
+  'output/<slug>/<slug>.cleaned.musicxml' 'output/<slug>/<slug>.mp3' \
+  --output 'output/<slug>/verify.json'
+```
+
+Interpret: `median_similarity` ≥ ~0.95 means the score broadly matches; `worst_bars` (with mm:ss timestamps) are where to listen first; `drift_suspects` mark bars whose local alignment stretches — possible barline drift; `repeat_inconsistencies` are bar pairs where the audio repeats but the transcribed pitch classes differ — one of each pair is probably wrong. All of these go into CLEANUP_NOTES, not into automatic fixes (chroma is octave-blind; treat it as a listening guide, not proof).
+
+Optional deep check when the user wants extra confidence (~3x stage-2 time): re-transcribe pitch-shifted audio and cross-check —
+
+```bash
+/opt/homebrew/bin/ffmpeg -i '<slug>.wav' -af 'asetrate=44100*1.059463,aresample=44100,atempo=0.943874' shifted_up.wav
+.venv/bin/transkun shifted_up.wav alt_up.mid --device cpu
+.venv/bin/python scripts/transcription_cleanup.py consensus '<slug>.cleaned.mid' 'alt_up.mid:1'
+```
+
+Suspects (notes that vanish under pitch shift) are flagged in the notes, never deleted.
 
 ## 7. Write `output/<slug>/CLEANUP_NOTES.md`
 
@@ -97,7 +117,7 @@ Three sections:
 
 1. **Ground truth used** — piece identification and the key/meter/tempo facts applied, with source URLs (or "none found — used statistical analysis").
 2. **Changed automatically** — every transform with counts and timestamps (artifact/ghost/duplicate removals, respellings, tie merges, staff moves, pedal marks, meter/key/tempo set, bespoke repairs with measure numbers).
-3. **Verify by ear** — each flag with ≈measure + timestamp (measure ≈ `time / (60/bpm × beats-per-bar)`, counting from the trim shift). Always include the standing items:
+3. **Verify by ear** — each flag with ≈measure + timestamp (measure ≈ `time / (60/bpm × beats-per-bar)`, counting from the trim shift). Lead with the `verify.json` results: worst bars (with their mm:ss), drift suspects, repeat inconsistencies, and any consensus suspects. Then the standing items:
    - verify pitches against the recording (the model cannot hear; wrong/missed notes are invisible in the data)
    - the downbeat anchor: the first sounded note is placed on bar 1 beat 1 — if the piece opens with a pickup, every barline is shifted
    - note durations are conservative (capped at the next onset, snapped down; pedal carries the sustain) — lengthen melody notes that should sing
