@@ -9,6 +9,10 @@ Input: a piece directory `output/<slug>/` (or any transcription `.mid`). Require
 
 **MIDI-only mode**: if the user asked for just a cleaned MIDI (no sheet music), run steps 1–3 and stop — `<slug>.cleaned.mid` is complete on its own (artifacts removed, trimmed, correct tempo/meter/key meta). Skip quantize/post/mscz, and base `CLEANUP_NOTES.md` on the clean report alone. If the performance has rubato or tempo changes, add `--tempo-map 'output/<slug>/beats.json'` to `clean` so the MIDI carries a beat-aligned tempo map (DAW bar grids follow the performance).
 
+**Articulation (rule)**: if the user wasn't already asked at transcription time, ask before quantizing whether to diverge from the legato default. If yes, pass `--no-legato-fill` to `quantize` and derive articulations from the MIDI (consistent raw durations well below the gap to the next onset = staccato/detached — add marks via a bespoke music21 pass where the pattern is clear, flag where it isn't).
+
+**Lint (rule)**: `quantize` and `post` output a `lint` block — unbalanced measures must be 0 and the printed-accidental ratio sane (verdict "ok") before the score ships.
+
 Core principle: fix what is decidable from the data (or from published facts about the piece); anything that requires hearing the recording gets **flagged, not changed**.
 
 Tools: `scripts/transcription_cleanup.py` (run with `.venv/bin/python`), mscore at `/Applications/MuseScore 4.app/Contents/MacOS/mscore`, music21 in the venv for bespoke fixes.

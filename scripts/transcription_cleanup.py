@@ -462,6 +462,51 @@ def build_measured_part(items, marks, ts_str, part_id):
     return ps
 
 
+def normalize_accidentals(score):
+    """Strip stale natural-accidental objects, then recompute accidental display
+    against the key context. makeMeasures attaches Accidental('natural') objects
+    along the way; left in place, the export prints an accidental on literally
+    every note (sharps on in-key notes, naturals on every white key)."""
+    for n in score.recurse().notes:
+        for p in (n.pitches if hasattr(n, "pitches") else [n.pitch]):
+            if p.accidental is not None and p.accidental.alter == 0:
+                p.accidental = None
+    for part in score.parts:
+        part.makeAccidentals(inPlace=True, overrideStatus=True,
+                             cautionaryNotImmediateRepeat=False)
+
+
+def lint_score(path):
+    """Structural invariants for generated MusicXML — every measure and every
+    voice must sum exactly to the bar duration (notes + rests balanced), and
+    accidentals must not be printed wholesale. Returned with every score so
+    regressions surface immediately instead of in the user's MuseScore."""
+    from music21 import converter
+    s = converter.parse(path)
+    bad = []
+    n_notes = n_acc = 0
+    for part in s.parts:
+        measures = list(part.getElementsByClass("Measure"))
+        for m in measures[:-1] if len(measures) > 1 else measures:
+            bar = m.barDuration.quarterLength
+            for c in (list(m.voices) or [m]):
+                length = max((e.offset + e.duration.quarterLength
+                              for e in c.notesAndRests), default=bar)
+                if abs(float(length) - float(bar)) > 1e-3:
+                    bad.append({"part": str(part.id)[-8:], "measure": m.number,
+                                "voice": getattr(c, "id", None),
+                                "content_ql": float(length), "bar_ql": float(bar)})
+    for n in s.recurse().notes:
+        for p in (n.pitches if hasattr(n, "pitches") else [n.pitch]):
+            n_notes += 1
+            if p.accidental is not None and p.accidental.displayStatus:
+                n_acc += 1
+    return {"unbalanced_measures": len(bad), "examples": bad[:10],
+            "printed_accidental_ratio": round(n_acc / n_notes, 2) if n_notes else 0,
+            "verdict": ("ok" if not bad and (not n_notes or n_acc / n_notes < 0.4)
+                        else "PROBLEM — inspect before delivering")}
+
+
 def assign_hands(notes):
     """Greedy time-ordered hand assignment. For each onset slot, choose the
     split of its (pitch-sorted) notes that minimizes: within-hand span beyond
@@ -770,13 +815,31 @@ def cmd_quantize(args):
                 return c
         return grid
 
+    # Cluster near-simultaneous onsets per hand first: rolled/arpeggiated chord
+    # attacks spread 10-80 ms, and snapping each note separately engraves a
+    # chain of 32nds instead of one chord.
+    hand_clusters = {}
+    for name in ("treble", "bass"):
+        hand = sorted((n for n in notes if hands[id(n)] == name),
+                      key=lambda x: x.start)
+        clusters = []
+        for n in hand:
+            if clusters and n.start - clusters[-1][-1].start <= 0.06:
+                clusters[-1].append(n)
+            else:
+                clusters.append([n])
+        hand_clusters[name] = clusters
+
+    def cluster_onset(cl):
+        return cl[len(cl) // 2].start
+
     # Per-beat subdivision selection: each beat picks the division (binary or
     # ternary) that best explains its onsets, with a complexity prior and a
     # bonus for the piece's prevailing division (Temperley-style). Genuine
     # triplets become real tuplets instead of being forced onto a binary grid.
     fracs_by_beat = {}
-    for n in notes:
-        q = float(to_ql(n.start))
+    for cl in (c for cs in hand_clusters.values() for c in cs):
+        q = float(to_ql(cluster_onset(cl)))
         b = max(0, int(q))
         fracs_by_beat.setdefault(b, []).append(max(0.0, q - b))
 
@@ -904,10 +967,9 @@ def cmd_quantize(args):
                        if hands[id(n)] == "treble"), default=0.0) + float(pad)
     score = m21stream.Score()
     for name in ("treble", "bass"):
-        hand = [n for n in notes if hands[id(n)] == name]
         slots = {}
-        for n in hand:
-            slots.setdefault(snap(to_ql(n.start)), []).append(n)
+        for cl in hand_clusters[name]:
+            slots.setdefault(snap(to_ql(cluster_onset(cl))), []).extend(cl)
         onsets = sorted(slots)
         marks = []
         if args.key:
@@ -946,6 +1008,12 @@ def cmd_quantize(args):
                 sustained += 1
             elif raw_dur > cap:
                 capped += 1
+            elif raw_dur >= cap * Fraction(3, 5) and not args.no_legato_fill:
+                # Legato assumption (default): a note held most of the way to
+                # the next onset fills the gap — flooring it leaves 32nd-rest
+                # confetti. --no-legato-fill keeps performed lengths for
+                # articulation-faithful engraving (staccato etc. by ear).
+                dur = cap
             # Keep durations metrically consistent with their beat's division:
             # ternary-beat notes stay inside the beat (tuplet values only);
             # binary durations may not END inside a ternary beat.
@@ -966,6 +1034,8 @@ def cmd_quantize(args):
         summary["staves"][name] = {"events": len(onsets),
                                    "durations_capped_at_next_onset": capped,
                                    "sustained_as_second_voice": sustained}
+
+    normalize_accidentals(score)
 
     if any([args.title, args.composer, args.arranger, args.performer]):
         from music21 import metadata as m21meta
@@ -1000,6 +1070,7 @@ def cmd_quantize(args):
         summary["offset_shift_beats"] = int(pad)
         summary["note_post"] = ("pass --offset-shift "
                                 f"{int(pad)} to `post` so pedal/dynamics map correctly")
+    summary["lint"] = lint_score(args.output)
     print(json.dumps(summary, indent=2))
     return 0
 
@@ -1532,8 +1603,11 @@ def cmd_post(args):
         if flags:
             changes["modulation_flags"] = flags
 
+    normalize_accidentals(score)
+
     score.write("musicxml", fp=args.output)
     changes["output"] = args.output
+    changes["lint"] = lint_score(args.output)
     print(json.dumps(changes, indent=2))
     return 0
 
@@ -1594,6 +1668,9 @@ def main():
     q.add_argument("--key", help='e.g. "D major" — inserts the key signature')
     q.add_argument("--time-sig", help='e.g. "3/4" — inserts the time signature and '
                                       'sets the bar length for downbeat inference')
+    q.add_argument("--no-legato-fill", action="store_true",
+                   help="keep performed note lengths instead of filling gaps to the "
+                        "next onset (for articulation-faithful engraving)")
     q.add_argument("--title", help="piece title for the score header")
     q.add_argument("--composer", help="original composer/artist")
     q.add_argument("--arranger", help="arranger (cover/arrangement author), if applicable")

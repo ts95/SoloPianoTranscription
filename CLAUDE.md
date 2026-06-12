@@ -67,6 +67,9 @@ MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 
 ## Notation sanity (reason about the score, don't just convert)
 
+- **Articulation question (rule)**: before starting transcription of a new piece, explicitly ask the user whether to diverge from the legato default. Legato default = note durations fill to the next onset (`quantize` does this automatically). If the user opts out, pass `quantize --no-legato-fill` and use the MIDI's performed durations to decide musically where staccato/other articulation marks belong (short raw durations against long gaps = detached playing).
+- **Balanced measures (rule)**: every measure and every voice must sum exactly to the bar duration — notes plus explicit rests, never invisible gaps. `quantize` and `post` print a `lint` block (unbalanced-measure count + printed-accidental ratio) with every generated score; a verdict other than "ok" must be fixed before delivering.
+
 After producing any score, inspect it for statistical outliers — transcription and quantization errors look like values that don't belong in the piece's rhythm profile:
 
 - Build a note-type histogram (`grep -o "<type>[a-z0-9]*</type>" <file>.musicxml | sort | uniq -c`). A handful of 32nds/64ths/128ths in a piece that is overwhelmingly 16ths-and-eighths are almost certainly artifacts (onset jitter, ghost notes, split sustains), not music — find them, and either fix what's clearly decidable (e.g. merge a 32nd+rest pair that sums to the prevailing 16th) or flag them for by-ear review.
@@ -98,4 +101,5 @@ After producing any score, inspect it for statistical outliers — transcription
 - Pieces with several tempi/keys are supported: `quantize --beats` engraves a metronome-mark change per sustained tempo plateau (>12% for 16+ beats; more than 4 levels = rubato, single median mark), `post` engraves real key-signature changes for persistent modulations (and restores the global key), and `clean --tempo-map beats.json` writes a beat-aligned MIDI tempo map so DAW bar grids follow the performance.
 - **Score metadata rule**: every generated `.musicxml`/`.mscz` must carry the piece metadata in its header via `quantize --title/--composer/--arranger/--performer` — title and original composer/artist always; arranger when it's an arrangement/cover with a known author; performer when the pianist is known. Only include roles that make sense for the piece.
 - music21 `makeMeasures()` does not split notes at barlines — always follow with `makeTies()`, or MuseScore rejects the overfull measures (exit 40).
+- music21 `makeMeasures()` attaches `Accidental('natural')` objects to notes; if they're not stripped before computing accidental display (`normalize_accidentals` in the cleanup script), the export prints an accidental on literally every note.
 - zsh does not word-split unquoted variables; don't stash multi-word commands in shell variables.

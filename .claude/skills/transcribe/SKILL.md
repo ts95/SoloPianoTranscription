@@ -7,7 +7,7 @@ description: Full pipeline - transcribe a solo piano YouTube video to sheet musi
 
 Input: a YouTube URL (in the skill arguments or the user's message). If no URL was given, ask for one.
 
-Run the three stages below in order. **Before each stage, check whether its output file already exists and is non-empty — if so, skip the stage** (unless the user asked to redo it). This makes re-runs after a failure cheap.
+**Before stage 1, ask the user** whether to diverge from the legato default (rule): legato fills each note to the next onset — clean engraving, pedal carries sustain; opting out (`quantize --no-legato-fill`) keeps performed lengths so detached/staccato playing stays visible and can be marked. Then run the three stages below in order. **Before each stage, check whether its output file already exists and is non-empty — if so, skip the stage** (unless the user asked to redo it). This makes re-runs after a failure cheap.
 
 ## Stage 1 — Download audio
 
