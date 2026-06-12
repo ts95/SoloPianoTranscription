@@ -28,10 +28,11 @@ Treat `bpm_candidates` with suspicion: autocorrelation locks onto the dominant *
 
 ```bash
 .venv/bin/python scripts/transcription_cleanup.py quantize \
-  '<input>.mid' '<output>.musicxml' --bpm <bpm>
+  '<input>.mid' '<output>.musicxml' --bpm <bpm> \
+  --title '<piece>' --composer '<original composer/artist>'
 ```
 
-Add `--key 'D major'` / `--time-sig '4/4'` when known. In the JSON summary, `score_seconds_at_bpm` must be within a few percent of `audio_seconds` — a big mismatch means the BPM is wrong; pick another candidate.
+Add `--key 'D major'` / `--time-sig '4/4'` when known. **Metadata rule**: always pass `--title` and `--composer`; add `--arranger` (cover/arrangement author) and `--performer` (pianist) when known — generated scores must identify the piece in their header. In the JSON summary, `score_seconds_at_bpm` must be within a few percent of `audio_seconds` — a big mismatch means the BPM is wrong; pick another candidate.
 
 ## 3. Convert to .mscz with MuseScore (format conversion only)
 

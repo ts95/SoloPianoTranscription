@@ -7,7 +7,7 @@ description: Clean up a transcribed score - remove transcription artifacts, fix 
 
 Input: a piece directory `output/<slug>/` (or any transcription `.mid`). Requires the raw `.mid`; the cleaned score is reconverted from it. **Never overwrite originals** — all products use the `.cleaned.*` suffix, plus a `CLEANUP_NOTES.md` report.
 
-**MIDI-only mode**: if the user asked for just a cleaned MIDI (no sheet music), run steps 1–3 and stop — `<slug>.cleaned.mid` is complete on its own (artifacts removed, trimmed, correct tempo/meter/key meta). Skip quantize/post/mscz, and base `CLEANUP_NOTES.md` on the clean report alone.
+**MIDI-only mode**: if the user asked for just a cleaned MIDI (no sheet music), run steps 1–3 and stop — `<slug>.cleaned.mid` is complete on its own (artifacts removed, trimmed, correct tempo/meter/key meta). Skip quantize/post/mscz, and base `CLEANUP_NOTES.md` on the clean report alone. If the performance has rubato or tempo changes, add `--tempo-map 'output/<slug>/beats.json'` to `clean` so the MIDI carries a beat-aligned tempo map (DAW bar grids follow the performance).
 
 Core principle: fix what is decidable from the data (or from published facts about the piece); anything that requires hearing the recording gets **flagged, not changed**.
 
@@ -60,7 +60,9 @@ Interpret the JSON with musical judgment:
 # quantize summary asked for it).
 .venv/bin/python scripts/transcription_cleanup.py quantize \
   'output/<slug>/<slug>.cleaned.mid' 'output/<slug>/<slug>.tmp.musicxml' \
-  --bpm 78 --key 'D major' --time-sig '3/4'
+  --bpm 78 --key 'D major' --time-sig '3/4' \
+  --title '<piece>' --composer '<original composer/artist>' \
+  # plus --arranger / --performer when known
 .venv/bin/python scripts/transcription_cleanup.py post \
   'output/<slug>/<slug>.tmp.musicxml' 'output/<slug>/<slug>.cleaned.musicxml' \
   --key 'D major' --time-sig '3/4' \
@@ -74,6 +76,10 @@ rm 'output/<slug>/<slug>.tmp.musicxml'
 `quantize` chooses a subdivision per beat (binary or ternary — genuine triplets become real tuplets; swing is detected and notated straight with a "Swing" direction), merges same-slot notes into chords, assigns hands with a cost model (span/movement/register — handles crossings; `--split E3` forces a static threshold), and caps durations at the next onset — except lone melody/bass notes that clearly ring over other registers, which become a second voice in the staff (check `sustained_as_second_voice` in the summary). With `--beats` the grid is the tracked beat sequence (refined to MIDI onsets), so rubato and drift don't corrupt barlines, and persistent tempo deviations get `rit.`/`accel.`/`a tempo` text. Pass `--time-sig` so it can infer the **downbeat phase** from bass/harmony/agogic cues — if the piece starts mid-bar it opens bar 1 with rests and reports a pickup flag (always relay this to "verify by ear").
 
 Check the summaries: fixed-grid `score_seconds_at_bpm` must be within a few percent of `audio_seconds`, and `post`'s `tempo_marked_bpm` should land near the chosen/tracked BPM — a mismatch means the BPM was wrong; go back to step 2. If quantize reports `offset_shift_beats`, pass that value to `post --offset-shift`.
+
+Multi-tempo / multi-key pieces: with `--beats`, sustained tempo plateaus (>12% for 16+ beats) are engraved as metronome-mark changes (`tempo_plateaus` in the summary); `post` engraves real key-signature changes for persistent modulations (`key_signatures_inserted`) and restores the global key after — always relay both to "verify by ear". For the MIDI deliverable, `clean --tempo-map 'output/<slug>/beats.json'` writes a beat-aligned tempo map so DAW bar grids follow the performance.
+
+**Score metadata (rule)**: every generated `.musicxml`/`.mscz` carries header metadata — `--title` and `--composer` (the original composer for classical, the original artist for pop/game covers) always; `--arranger` when the arrangement has a known author (cover channel / arranger credit from the video title or description); `--performer` when the pianist is known. Omit roles that don't apply.
 
 `post` does the canned notation fixes: enharmonic respelling toward the key, merging fragmented tied chains, moving clearly out-of-range notes to the correct staff, pedal markings from CC64, and **dynamics from MIDI velocities** — level marks (pp–ff) at changes plus cresc./dim. hairpins where the velocity profile trends steadily. Check `dynamics_preview` in the analyze report first; if the proposed levels look like noise (e.g. constant-velocity synthesized audio), drop `--dynamics-from`.
 

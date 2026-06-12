@@ -325,18 +325,29 @@ def cmd_clean(args):
     if args.key:
         out.key_signature_changes.append(
             pretty_midi.KeySignature(pretty_midi.key_name_to_key_number(args.key), 0))
-    inst = pretty_midi.Instrument(program=0, name="Piano")
-    for n in kept:
-        inst.notes.append(pretty_midi.Note(
-            velocity=n.velocity, pitch=n.pitch,
-            start=max(0.0, n.start - shift), end=max(0.0, n.end - shift)))
-    for src in pm.instruments:
-        for cc in src.control_changes:
-            if cc.number == 64 and cc.time - shift >= 0:
-                inst.control_changes.append(
-                    pretty_midi.ControlChange(64, cc.value, cc.time - shift))
-    out.instruments.append(inst)
-    out.write(args.output)
+    tempo_map_events = None
+    if args.tempo_map:
+        # Beat-aligned tempo map: ticks follow the tracked beats, so DAW bar
+        # grids track the performance through rubato and tempo changes. The
+        # warp's bar-1 rebase makes the trim implicit; original times go in.
+        beats = load_beat_times(args.tempo_map)
+        ccs = [(cc.value, cc.time) for src in pm.instruments
+               for cc in src.control_changes if cc.number == 64]
+        tempo_map_events = write_tempo_mapped_midi(
+            args.output, kept, ccs, beats, args.time_sig, args.key)
+    else:
+        inst = pretty_midi.Instrument(program=0, name="Piano")
+        for n in kept:
+            inst.notes.append(pretty_midi.Note(
+                velocity=n.velocity, pitch=n.pitch,
+                start=max(0.0, n.start - shift), end=max(0.0, n.end - shift)))
+        for src in pm.instruments:
+            for cc in src.control_changes:
+                if cc.number == 64 and cc.time - shift >= 0:
+                    inst.control_changes.append(
+                        pretty_midi.ControlChange(64, cc.value, cc.time - shift))
+        out.instruments.append(inst)
+        out.write(args.output)
 
     summary = {
         "input": args.input,
@@ -350,6 +361,8 @@ def cmd_clean(args):
         "removed_duplicates": {"count": len(dups), "sample": [note_dict(n) for n in dups[:50]]},
         "trim_shift_s": round(shift, 3),
         "tempo_bpm": tempo,
+        "tempo_map": (f"{tempo_map_events} tempo events from {args.tempo_map} "
+                      "(bar grid follows the performance)") if tempo_map_events else None,
         "time_sig": args.time_sig,
         "key": args.key,
         "pedal_regions": pedal_regions(pm, shift),
@@ -525,6 +538,83 @@ def beat_warp(beats):
         return i + (t - beats[i]) / (beats[i + 1] - beats[i])
 
     return f
+
+
+def tempo_plateaus(periods, min_beats=16, threshold=0.12):
+    """Segment beat periods into stable tempo plateaus: [(start_beat, period_s)].
+    A new plateau needs min_beats consecutive (smoothed) periods all deviating
+    >threshold from the current level — short rubato swings don't count."""
+    if not periods:
+        return []
+    smooth = [statistics.median(periods[max(0, k - 3):k + 4]) for k in range(len(periods))]
+    plats = [(0, statistics.median(smooth[:min_beats]) if len(smooth) >= min_beats
+              else smooth[0])]
+    k = min_beats
+    while k + min_beats <= len(smooth):
+        cur = plats[-1][1]
+        window = smooth[k:k + min_beats]
+        if all(abs(s - cur) / cur > threshold for s in window):
+            plats.append((k, statistics.median(window)))
+            k += min_beats
+        else:
+            k += 1
+    return plats
+
+
+def write_tempo_mapped_midi(path, notes, pedal_ccs, beats, time_sig, key_name):
+    """Write a MIDI whose tick grid follows the tracked beats: one tick-aligned
+    tempo event per (changed) beat period, notes at their beat positions. Note
+    SECONDS are preserved (the warp defines both ticks and tempo), but DAW bar
+    grids now follow the performance through rubato and tempo changes."""
+    import math
+
+    import mido
+    TPQ = 480
+    warp = beat_warp(beats)
+    base = math.floor(warp(notes[0].start)) if notes else 0
+
+    def tick(t):
+        return max(0, round((warp(t) - base) * TPQ))
+
+    events = []  # (tick, priority, mido message with time=0)
+    if time_sig:
+        num, den = (int(x) for x in time_sig.split("/"))
+        events.append((0, 0, mido.MetaMessage("time_signature",
+                                              numerator=num, denominator=den, time=0)))
+    if key_name:
+        parts = key_name.split()
+        mido_key = parts[0] + ("m" if len(parts) > 1 and parts[1].lower() == "minor" else "")
+        events.append((0, 0, mido.MetaMessage("key_signature", key=mido_key, time=0)))
+    last_us = None
+    for k, (a, b) in enumerate(zip(beats, beats[1:])):
+        if k - base < 0:
+            continue
+        us = int((b - a) * 1e6)
+        if last_us is None or abs(us - last_us) > last_us * 0.01:
+            events.append(((k - base) * TPQ, 0, mido.MetaMessage("set_tempo", tempo=us, time=0)))
+            last_us = us
+    for n in notes:
+        events.append((tick(n.start), 1, mido.Message("note_on", note=n.pitch,
+                                                      velocity=n.velocity, time=0)))
+        events.append((max(tick(n.end), tick(n.start) + 1), 1,
+                       mido.Message("note_off", note=n.pitch, velocity=0, time=0)))
+    for value, t in pedal_ccs:
+        if warp(t) - base < -0.5:
+            continue
+        events.append((tick(t), 1, mido.Message("control_change", control=64,
+                                                value=value, time=0)))
+
+    events.sort(key=lambda e: (e[0], e[1]))
+    track = mido.MidiTrack()
+    prev = 0
+    for tk, _, msg in events:
+        msg.time = tk - prev
+        prev = tk
+        track.append(msg)
+    mid = mido.MidiFile(ticks_per_beat=TPQ)
+    mid.tracks.append(track)
+    mid.save(path)
+    return sum(1 for _, p, m in events if m.type == "set_tempo")
 
 
 def refine_beats(beats, notes, window=0.05):
@@ -755,17 +845,44 @@ def cmd_quantize(args):
             summary["bar_phase"]["pickup"] = (
                 "weak downbeat evidence — kept first onset on beat 1; verify by ear")
 
-    # Tempo-trend text where the tracked tempo deviates persistently (>=4 beats,
-    # >7%) from the median: rit. / accel., and a tempo on recovery.
-    tempo_texts = []
+    # Tempo structure: sustained plateaus become real metronome-mark changes
+    # (a piece may have several tempi); short swings within a plateau become
+    # rit. / accel. / a tempo text.
+    tempo_texts, tempo_mark_events = [], []
     if warp and beat_times:
-        med = statistics.median(periods)
+        plats = tempo_plateaus(periods)
+        if len(plats) > 4:
+            # Wall-to-wall "plateaus" = rubato, not structure: one median mark.
+            summary["tempo_plateaus"] = (f"{len(plats)} candidate tempo levels — "
+                                         "rubato, marked the median only")
+            plats = [(0, statistics.median(periods))]
+        elif len(plats) == 1:
+            # Single tempo: mark the whole-piece median, not the opening level
+            # (a slow intro would otherwise bias the printed tempo).
+            plats = [(0, statistics.median(periods))]
+
+        def level_at(k):
+            lv = plats[0][1]
+            for start, p in plats:
+                if k >= start:
+                    lv = p
+            return lv
+
+        last_bpm = None
+        for start, p in plats:
+            bpm_v = round(60 / p)
+            if bpm_v != last_bpm:
+                tempo_mark_events.append((max(0, start - warp_base + int(pad)), bpm_v))
+                last_bpm = bpm_v
+        if len(tempo_mark_events) > 1:
+            summary["tempo_plateaus"] = [{"beat": b, "bpm": v} for b, v in tempo_mark_events]
         state = None
         for k in range(len(periods) - 3):
             beat_off = k - warp_base + int(pad)
             if beat_off < 0:
                 continue  # before the score starts
             window = statistics.mean(periods[k:k + 4])
+            med = level_at(k)
             trend = ("rit." if window > med * 1.07
                      else "accel." if window < med * 0.93 else None)
             if trend != state and (trend or state):
@@ -777,8 +894,14 @@ def cmd_quantize(args):
             tempo_texts = []
         elif tempo_texts:
             summary["tempo_marks"] = [{"beat": b, "mark": m} for b, m in tempo_texts]
+    else:
+        tempo_mark_events = [(0, round(float(bpm)))]
 
     ts_str = args.time_sig or "4/4"
+    # A mark inserted past a staff's last note gets dropped by makeMeasures —
+    # host each tempo mark/text in a staff that still has content there.
+    treble_last = max((float(to_ql(n.start)) for n in notes
+                       if hands[id(n)] == "treble"), default=0.0) + float(pad)
     score = m21stream.Score()
     for name in ("treble", "bass"):
         hand = [n for n in notes if hands[id(n)] == name]
@@ -790,12 +913,16 @@ def cmd_quantize(args):
         if args.key:
             tonic, mode = args.key.split()[0], (args.key.split() + ["major"])[1]
             marks.append((0, m21key.KeySignature(m21key.Key(tonic, mode).sharps)))
-        if name == "treble":
-            if swing:
-                sw = m21expr.TextExpression("Swing")
-                sw.style.fontStyle = "bold"
-                marks.append((0, sw))
-            for beat_k, label in tempo_texts:
+        if name == "treble" and swing:
+            sw = m21expr.TextExpression("Swing")
+            sw.style.fontStyle = "bold"
+            marks.append((0, sw))
+        from music21 import tempo as m21tempo
+        for beat_k, bpm_v in tempo_mark_events:
+            if (name == "treble") == (beat_k <= treble_last):
+                marks.append((beat_k, m21tempo.MetronomeMark(number=bpm_v)))
+        for beat_k, label in tempo_texts:
+            if (name == "treble") == (beat_k <= treble_last):
                 te = m21expr.TextExpression(label)
                 te.style.fontStyle = "italic"
                 marks.append((beat_k, te))
@@ -839,6 +966,23 @@ def cmd_quantize(args):
         summary["staves"][name] = {"events": len(onsets),
                                    "durations_capped_at_next_onset": capped,
                                    "sustained_as_second_voice": sustained}
+
+    if any([args.title, args.composer, args.arranger, args.performer]):
+        from music21 import metadata as m21meta
+        md = m21meta.Metadata()
+        if args.title:
+            md.title = args.title
+        if args.composer:
+            md.composer = args.composer
+        if args.arranger:
+            md.addContributor(m21meta.Contributor(role="arranger", name=args.arranger))
+        if args.performer:
+            md.addContributor(m21meta.Contributor(role="performer", name=args.performer))
+        score.metadata = md
+        summary["metadata"] = {k: v for k, v in (("title", args.title),
+                                                 ("composer", args.composer),
+                                                 ("arranger", args.arranger),
+                                                 ("performer", args.performer)) if v}
 
     score.write("musicxml", fp=args.output)
     end_t = pm.get_end_time()
@@ -1151,15 +1295,18 @@ def cmd_post(args):
     # in place corrupts the two-staff merge at MusicXML export.
     if args.time_sig:
         from music21 import expressions as m21expr, key as m21keymod, layout, \
-            stream as m21stream
+            stream as m21stream, tempo as m21tempomod
         new_parts = []
         for part in list(score.parts):
             flat = part.flatten()
             items = [(n.offset, n) for n in flat.notes]
             marks = [(el.offset, el) for el in flat.getElementsByClass(
-                (m21expr.TextExpression, m21keymod.KeySignature))]
+                (m21expr.TextExpression, m21keymod.KeySignature,
+                 m21tempomod.MetronomeMark))]
             new_parts.append(build_measured_part(items, marks, args.time_sig, part.id))
         new_score = m21stream.Score()
+        if score.metadata is not None:
+            new_score.metadata = score.metadata  # title/composer/arranger/performer
         for ps in new_parts:
             new_score.insert(0, ps)
         if len(new_parts) == 2:
@@ -1248,17 +1395,20 @@ def cmd_post(args):
     def to_q(t):
         return ((warp(t) - warp_base) if warp else t * qps) + shift_q
 
-    # Set a metronome mark matching the grid, so playback matches the recording.
+    # Tempo marks: quantize now writes them (possibly several — plateaus), so
+    # preserve any that exist; only synthesize a single mark on legacy input.
     if mark_bpm:
         from music21 import tempo as m21tempo
-        for mm in list(score.recurse().getElementsByClass(m21tempo.MetronomeMark)):
-            if mm.activeSite is not None:
-                mm.activeSite.remove(mm)
-        target = parts[0] if parts else score
-        first_m = target.getElementsByClass("Measure").first()
-        (first_m if first_m is not None else target).insert(
-            0, m21tempo.MetronomeMark(number=mark_bpm))
-        changes["tempo_marked_bpm"] = mark_bpm
+        existing = list(score.recurse().getElementsByClass(m21tempo.MetronomeMark))
+        if existing:
+            changes["tempo_marked_bpm"] = [int(mm.number) for mm in existing
+                                           if mm.number is not None]
+        else:
+            target = parts[0] if parts else score
+            first_m = target.getElementsByClass("Measure").first()
+            (first_m if first_m is not None else target).insert(
+                0, m21tempo.MetronomeMark(number=mark_bpm))
+            changes["tempo_marked_bpm"] = mark_bpm
 
     # Pedal markings from CC64 regions captured by the clean pass.
     if args.pedal_from:
@@ -1354,7 +1504,28 @@ def cmd_post(args):
                 j += 1
             if j > i:  # 2+ consecutive windows agree on the foreign key
                 lo_s, hi_s = wins[i][0], wins[j][0] + WIN
-                changes["respelled"] += respell_toward(kname, lo=to_q(lo_s), hi=to_q(hi_s))
+                lo_q, hi_q = to_q(lo_s), to_q(hi_s)
+                changes["respelled"] += respell_toward(kname, lo=lo_q, hi=hi_q)
+                # Engrave the modulation: a real key-signature change at the
+                # nearest barline, restored to the global key afterwards.
+                for part in parts:
+                    measures = list(part.getElementsByClass(Measure))
+                    m_lo = m_hi = None
+                    for m in measures:
+                        if m.offset <= lo_q:
+                            m_lo = m
+                        if m.offset <= hi_q:
+                            m_hi = m
+                    if m_lo is None or m_lo is m_hi:
+                        continue  # sub-bar region: flag only
+                    for m, key_name in ((m_lo, kname), (m_hi, args.key)):
+                        if m is None:
+                            continue
+                        for old in list(m.getElementsByClass(m21key.KeySignature)):
+                            m.remove(old)
+                        m.insert(0, m21key.KeySignature(m21_key(key_name).sharps))
+                        changes["key_signatures_inserted"] = \
+                            changes.get("key_signatures_inserted", 0) + 1
                 flags.append({"approx_start_s": round(lo_s, 1),
                               "approx_end_s": round(hi_s, 1), "local_key": kname})
             i = j + 1
@@ -1388,6 +1559,9 @@ def main():
     c.add_argument("--key", help='pretty_midi key name, e.g. "D Major" or "C minor"')
     c.add_argument("--trim", action=argparse.BooleanOptionalAction, default=True,
                    help="shift so the first note starts at 0 (bar 1 beat 1)")
+    c.add_argument("--tempo-map", help="beats.json — write a beat-aligned tempo map "
+                                       "(DAW bar grids follow the performance through "
+                                       "rubato and tempo changes)")
     c.add_argument("--report", help="also write the JSON summary to this file")
     c.set_defaults(fn=cmd_clean)
 
@@ -1420,6 +1594,10 @@ def main():
     q.add_argument("--key", help='e.g. "D major" — inserts the key signature')
     q.add_argument("--time-sig", help='e.g. "3/4" — inserts the time signature and '
                                       'sets the bar length for downbeat inference')
+    q.add_argument("--title", help="piece title for the score header")
+    q.add_argument("--composer", help="original composer/artist")
+    q.add_argument("--arranger", help="arranger (cover/arrangement author), if applicable")
+    q.add_argument("--performer", help="performer/pianist, if known")
     q.set_defaults(fn=cmd_quantize)
 
     v = sub.add_parser("verify", help="render the score and compare to the recording "
