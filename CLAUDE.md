@@ -1,6 +1,6 @@
 # SoloPianoTranscription
 
-Pipeline for transcribing solo piano performances from YouTube into editable sheet music: YouTube link → mp3 (yt-dlp) → MIDI (Transkun v2) → MusicXML (`transcription_cleanup.py quantize`) → .mscz (MuseScore 4 CLI, format conversion only). Used for pieces where no published sheet music exists.
+Pipeline for transcribing solo piano performances from YouTube into editable sheet music: YouTube link → 44.1 kHz WAV (yt-dlp + `scripts/prepare_audio.sh`) → MIDI (Transkun v2) → MusicXML (`transcription_cleanup.py quantize`) → .mscz (MuseScore 4 CLI, format conversion only). Used for pieces where no published sheet music exists.
 
 ## Environment
 
@@ -12,6 +12,7 @@ Pipeline for transcribing solo piano performances from YouTube into editable she
 - ffmpeg is at `/opt/homebrew/bin/ffmpeg` (needed by yt-dlp).
 - If `.venv` doesn't exist: `python3.11 -m venv .venv && .venv/bin/pip install transkun yt-dlp music21` (pulls PyTorch, ~2 GB).
 - `scripts/transcription_cleanup.py` (run with `.venv/bin/python`) provides `analyze` / `clean` / `quantize` / `post` subcommands used by the pipeline and `cleanup-score` skills.
+- `scripts/prepare_audio.sh <in> <out.wav>` — two-pass linear loudness normalization + 44.1 kHz resample; run on all audio before Transkun.
 
 ## Output layout
 
@@ -19,7 +20,8 @@ One directory per piece, named by the slugified video title:
 
 ```
 output/<slug>/
-├── <slug>.mp3        # downloaded audio
+├── <slug>.wav        # prepared audio (44.1 kHz, loudness-normalized) — transcription input
+├── <slug>.mp3        # listening copy
 ├── <slug>.mid        # Transkun transcription (performance timing, unquantized)
 ├── <slug>.musicxml   # quantized score (interchange format)
 ├── <slug>.mscz       # native MuseScore 4 file (for direct editing)
@@ -31,12 +33,17 @@ output/<slug>/
 ## Pipeline stage commands
 
 ```bash
-# 1. Download audio (slug comes from --restrict-filenames)
-.venv/bin/yt-dlp -x --audio-format mp3 --audio-quality 0 --restrict-filenames \
+# 1. Download audio (slug comes from --restrict-filenames); decode once to WAV,
+#    normalize linearly, derive a listening mp3 — never feed a re-encoded mp3 to Transkun
+.venv/bin/yt-dlp -x --audio-format wav --restrict-filenames \
   -o 'output/%(title)s/%(title)s.%(ext)s' '<url>'
+scripts/prepare_audio.sh 'output/<slug>/<slug>.wav' 'output/<slug>/<slug>.prepared.wav'
+mv 'output/<slug>/<slug>.prepared.wav' 'output/<slug>/<slug>.wav'
+/opt/homebrew/bin/ffmpeg -i 'output/<slug>/<slug>.wav' -codec:a libmp3lame -q:a 0 \
+  'output/<slug>/<slug>.mp3'
 
 # 2. Audio → MIDI
-.venv/bin/transkun 'output/<slug>/<slug>.mp3' 'output/<slug>/<slug>.mid' --device cpu
+.venv/bin/transkun 'output/<slug>/<slug>.wav' 'output/<slug>/<slug>.mid' --device cpu
 
 # 3. MIDI → MusicXML (script quantizer — NEVER MuseScore's MIDI import),
 #    then .mscz via mscore (format conversion only).
@@ -65,6 +72,10 @@ After producing any score, inspect it for statistical outliers — transcription
 - Judge outliers in context: a 32nd-note run in one contiguous passage is likely a real ornament/flourish; the same values scattered randomly one-at-a-time through the piece are noise.
 - A tuplet explosion, or a histogram dominated by values one "level" off from what the piece sounds like, means the BPM/grid was wrong — requantize rather than patching notes.
 
+## Docs
+
+- **Keep README.md and CLAUDE.md in sync with reality and each other.** Whenever a change makes either outdated (pipeline stages, commands, file layout, dependencies, skills), update both in the same delivery — README.md for humans (overview, setup, usage), CLAUDE.md for the agent (commands, paths, gotchas). Never describe the old pipeline in one file and the new one in the other.
+
 ## Git
 
 - Commit automatically after every delivered change (new/updated skills, scripts, docs, pipeline fixes) — one commit per delivery with a descriptive message. Don't wait to be asked.
@@ -73,7 +84,7 @@ After producing any score, inspect it for statistical outliers — transcription
 
 ## Gotchas
 
-- Transkun expects 44.1 kHz mp3/wav input; the yt-dlp command above produces compatible mp3s. If transcribing user-supplied audio in another format/rate, convert with ffmpeg first.
+- Transkun expects 44.1 kHz input; `scripts/prepare_audio.sh` guarantees it (and applies linear loudness normalization — never dynamic-mode loudnorm, which compresses dynamics and skews velocities). Run it on all audio before Transkun, including user-supplied files.
 - Stage 2 takes a few minutes per piece on CPU — run it in the background and don't assume it hung.
 - Stages are re-run safe by convention: before running a stage, check whether its output file already exists and is non-empty, and skip it unless the user asked to redo it.
 - `mscore` may print Qt warnings to stderr even on success — judge by exit code and whether the output file was written.

@@ -11,21 +11,25 @@ Run the three stages below in order. **Before each stage, check whether its outp
 
 ## Stage 1 — Download audio
 
-Follow the `download-audio` skill:
+Follow the `download-audio` skill (WAV for transcription, mp3 for listening — never feed a re-encoded mp3 to Transkun):
 
 ```bash
-.venv/bin/yt-dlp -x --audio-format mp3 --audio-quality 0 --restrict-filenames \
+.venv/bin/yt-dlp -x --audio-format wav --restrict-filenames \
   -o 'output/%(title)s/%(title)s.%(ext)s' '<url>'
+scripts/prepare_audio.sh 'output/<slug>/<slug>.wav' 'output/<slug>/<slug>.prepared.wav'
+mv 'output/<slug>/<slug>.prepared.wav' 'output/<slug>/<slug>.wav'
+/opt/homebrew/bin/ffmpeg -i 'output/<slug>/<slug>.wav' -codec:a libmp3lame -q:a 0 \
+  'output/<slug>/<slug>.mp3'
 ```
 
-Note the resulting mp3 path; it determines `<slug>` for the next stages.
+The wav path determines `<slug>` for the next stages.
 
 ## Stage 2 — Audio → MIDI
 
 Follow the `audio-to-midi` skill:
 
 ```bash
-.venv/bin/transkun 'output/<slug>/<slug>.mp3' 'output/<slug>/<slug>.mid' --device cpu
+.venv/bin/transkun 'output/<slug>/<slug>.wav' 'output/<slug>/<slug>.mid' --device cpu
 ```
 
 This takes a few minutes on CPU — run it in the background and wait for it; don't assume it hung.

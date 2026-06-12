@@ -5,14 +5,15 @@ description: Transcribe a solo piano audio file (mp3/wav) to MIDI using Transkun
 
 # Transcribe piano audio to MIDI with Transkun v2
 
-Input: a path to an audio file (mp3 or wav). Pipeline convention: `output/<slug>/<slug>.mp3` → `output/<slug>/<slug>.mid`. For a user-supplied file outside `output/`, write the `.mid` next to the source file.
+Input: a path to an audio file (wav preferred; mp3 works). Pipeline convention: `output/<slug>/<slug>.wav` → `output/<slug>/<slug>.mid`. For a user-supplied file outside `output/`, write the `.mid` next to the source file.
 
 ```bash
 .venv/bin/transkun '<input-audio>' '<output>.mid' --device cpu
 ```
 
-- Transkun expects 44.1 kHz mp3/wav. Pipeline mp3s are fine; for other formats or sample rates, convert first:
-  `ffmpeg -i '<input>' -ar 44100 '<input>-44k.wav'`
+- Transkun expects 44.1 kHz audio. The pipeline `.wav` (from `download-audio`) is already prepared. For user-supplied audio in any format/rate, run it through the normalizer first — it also applies linear loudness normalization, which keeps velocities in the model's comfortable range:
+  `scripts/prepare_audio.sh '<input>' '<input>-prepared.wav'`
+- Avoid feeding lossy re-encodes when a better source exists (e.g. don't convert flac/wav to mp3 first — each lossy generation costs accuracy).
 - Transcription takes a few minutes per piece on CPU. Run the command in the background and wait for completion — slow is normal, don't kill it prematurely.
 - The v2 model weights ship with the pip package; no flags needed to select them.
 

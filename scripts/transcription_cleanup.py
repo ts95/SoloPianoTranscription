@@ -20,8 +20,12 @@ import sys
 import numpy as np
 import pretty_midi
 
-GHOST_INTERVALS = {12, 19, 24}  # octave, twelfth, double octave above a real note
-ONSET_TOLERANCE = 0.03          # seconds: "same onset" for ghost/duplicate checks
+GHOST_INTERVALS = {12, 19, 24, 28}  # piano partials 2,3,4,5: 8ve, 12th, 15th, 17th above
+SUB_GHOST_INTERVALS = {12}          # octave BELOW a louder note (sub-harmonic error)
+ONSET_TOLERANCE = 0.03              # seconds: "same onset" for ghost/duplicate checks
+
+MAJOR_SCALE_PCS = {0, 2, 4, 5, 7, 9, 11}
+MINOR_SCALE_PCS = {0, 2, 3, 5, 7, 8, 10}
 
 KRUMHANSL_MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
 KRUMHANSL_MINOR = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
@@ -50,22 +54,56 @@ def find_artifacts(notes, min_dur, vel_ratio):
     ]
 
 
-def find_ghosts(notes, vel_ratio=0.55):
-    """Quiet notes at a harmonic interval above a louder note with the same onset."""
+def find_ghosts(notes, vel_ratio=0.55, pedal=None):
+    """Quiet notes at a harmonic interval from a louder note with the same onset.
+
+    With pedal regions supplied, the velocity threshold is raised during
+    pedal-down (sympathetic resonance breeds false positives there) and
+    lowered with the pedal up (a quiet harmonic note is more plausibly real).
+    """
     med_vel = statistics.median(n.velocity for n in notes)
+
+    def pedal_down(t):
+        return pedal is not None and any(r["down"] <= t <= r["up"] for r in pedal)
+
     ghosts = []
-    for i, n in enumerate(notes):
-        if n.velocity >= med_vel * vel_ratio:
+    for n in notes:
+        ratio = vel_ratio * (1.15 if pedal_down(n.start) else 0.8)
+        if n.velocity >= med_vel * ratio:
             continue
         for m in notes:
             if m is n:
                 continue
             if abs(m.start - n.start) > ONSET_TOLERANCE:
                 continue
-            if n.pitch - m.pitch in GHOST_INTERVALS and m.velocity > n.velocity * 1.5:
+            iv = n.pitch - m.pitch
+            if (iv in GHOST_INTERVALS or -iv in SUB_GHOST_INTERVALS) \
+                    and m.velocity > n.velocity * 1.5:
                 ghosts.append(n)
                 break
     return ghosts
+
+
+def key_scale_pcs(key_name):
+    """Pitch classes of the named key's scale, e.g. 'D major' -> {2,4,6,7,9,11,1}."""
+    tonic, mode = key_name.split()
+    t = PITCH_NAMES.index(tonic)
+    base = MAJOR_SCALE_PCS if mode == "major" else MINOR_SCALE_PCS
+    return {(t + pc) % 12 for pc in base}
+
+
+def looks_musical(n, notes, scale):
+    """Music prior for short/quiet artifact candidates: keep (flag, don't delete)
+    a candidate that is in-key AND not a semitone/major-7th clash against a
+    louder simultaneous note. Out-of-key dissonant blips are deleted."""
+    if n.pitch % 12 not in scale:
+        return False
+    for m in notes:
+        if m is n or abs(m.start - n.start) > ONSET_TOLERANCE:
+            continue
+        if m.velocity > n.velocity and (abs(n.pitch - m.pitch) % 12) in (1, 11):
+            return False
+    return True
 
 
 def find_duplicates(notes):
@@ -219,7 +257,7 @@ def cmd_analyze(args):
         print(json.dumps({"error": "no notes found"}))
         return 1
     artifacts = find_artifacts(notes, args.min_dur, args.vel_ratio)
-    ghosts = find_ghosts(notes)
+    ghosts = find_ghosts(notes, pedal=pedal_regions(pm))
     dups = find_duplicates(notes)
     clusters, runs = clusters_and_runs(notes)
     vels = [n.velocity for n in notes]
@@ -263,9 +301,13 @@ def cmd_clean(args):
         return 1
 
     drop = set()
-    artifacts = find_artifacts(notes, args.min_dur, args.vel_ratio)
+    scale = key_scale_pcs(key_estimate(notes)[0]["key"])
+    candidates = find_artifacts(notes, args.min_dur, args.vel_ratio)
+    artifacts = [n for n in candidates if not looks_musical(n, notes, scale)]
+    kept_suspects = [n for n in candidates if looks_musical(n, notes, scale)]
     drop.update(id(n) for n in artifacts)
-    ghosts = find_ghosts(notes) if not args.keep_ghosts else []
+    pedal = pedal_regions(pm)
+    ghosts = find_ghosts(notes, pedal=pedal) if not args.keep_ghosts else []
     drop.update(id(n) for n in ghosts)
     dups = find_duplicates(notes)
     drop.update(id(n) for n in dups)
@@ -299,6 +341,9 @@ def cmd_clean(args):
         "output": args.output,
         "kept_notes": len(kept),
         "removed_artifacts": {"count": len(artifacts), "sample": [note_dict(n) for n in artifacts[:50]]},
+        "kept_suspects": {"count": len(kept_suspects),
+                          "note": "short+quiet but in-key and consonant — kept; verify by ear",
+                          "sample": [note_dict(n) for n in kept_suspects[:50]]},
         "removed_ghosts": {"count": len(ghosts), "sample": [note_dict(n) for n in ghosts[:50]]},
         "removed_duplicates": {"count": len(dups), "sample": [note_dict(n) for n in dups[:50]]},
         "trim_shift_s": round(shift, 3),
@@ -450,8 +495,8 @@ def cmd_post(args):
     from music21.stream import Measure
 
     score = converter.parse(args.input)
-    changes = {"respelled": 0, "ties_merged": "stripTies applied", "rehand_moved": 0,
-               "rebarred": None, "pedal_marks": 0, "pedal_note": None,
+    changes = {"respelled": 0, "respelled_directional": 0, "ties_merged": "stripTies applied",
+               "rehand_moved": 0, "rebarred": None, "pedal_marks": 0, "pedal_note": None,
                "dynamics_inserted": 0, "hairpins_inserted": 0, "dynamics_note": None}
 
     # Merge fragmented tied chains; export re-creates only the ties barlines require.
@@ -518,10 +563,19 @@ def cmd_post(args):
         treble = sorted(parts, key=avg_pitch, reverse=True)[0] if len(parts) == 2 else None
         changes["rebarred"] = f"{args.time_sig} across {len(new_parts)} staves"
 
-    if args.key:
-        k = m21key.Key(args.key.split()[0], args.key.split()[1] if " " in args.key else "major")
-        prefer_flats = k.sharps < 0
+    def m21_key(name):
+        return m21key.Key(name.split()[0], name.split()[1] if " " in name else "major")
+
+    def respell_toward(key_name, lo=None, hi=None):
+        """Respell wrong-side/awkward accidentals toward key_name; optionally
+        only notes whose score offset lies in [lo, hi)."""
+        prefer_flats = m21_key(key_name).sharps < 0
+        count = 0
         for n in score.recurse().notes:
+            if lo is not None:
+                off = n.getOffsetInHierarchy(score)
+                if not (lo <= off < hi):
+                    continue
             pitches = n.pitches if hasattr(n, "pitches") else [n.pitch]
             for p in pitches:
                 acc = p.accidental
@@ -532,7 +586,32 @@ def cmd_post(args):
                     enh = p.getEnharmonic()
                     if enh.accidental is None or abs(enh.accidental.alter) <= 1:
                         p.step, p.accidental, p.octave = enh.step, enh.accidental, enh.octave
-                        changes["respelled"] += 1
+                        count += 1
+        return count
+
+    if args.key:
+        changes["respelled"] += respell_toward(args.key)
+
+        # Chromatic (out-of-key) tones spell by melodic direction — ascending
+        # prefers the sharp spelling, descending the flat — overriding the
+        # key-side rule above for single notes with a following note to judge by.
+        scale_pcs = {p.pitchClass for p in m21_key(args.key).pitches}
+        for part in score.parts:
+            seq = sorted((n for n in part.recurse().notes if n.isNote),
+                         key=lambda n: n.getOffsetInHierarchy(part))
+            for cur, nxt in zip(seq, seq[1:]):
+                p = cur.pitch
+                if (p.accidental is None or p.accidental.alter == 0
+                        or p.pitchClass in scale_pcs):
+                    continue
+                delta = nxt.pitch.ps - p.ps
+                if delta == 0:
+                    continue
+                if (delta < 0) != (p.accidental.alter < 0):
+                    enh = p.getEnharmonic()
+                    if enh.accidental is not None and abs(enh.accidental.alter) == 1:
+                        p.step, p.accidental, p.octave = enh.step, enh.accidental, enh.octave
+                        changes["respelled_directional"] += 1
 
     # Seconds -> quarterLength scale. MuseScore's MIDI import picks its own
     # quantization grid (it ignores tempo meta just like time signatures), so
@@ -625,6 +704,37 @@ def cmd_post(args):
                     current = level
             changes["dynamics_note"] = ("derived from MIDI velocities; pedal and texture "
                                         "can skew perceived loudness — refine by ear")
+
+    # Windowed key check: a persistent local key whose signature differs from the
+    # global one marks a modulation — respell that region locally and flag it.
+    if args.key and args.dynamics_from and qps:
+        WIN = 15.0
+        global_sharps = m21_key(args.key).sharps
+        m_notes = all_notes(pm_timing)
+        wins, t = [], 0.0
+        while t < pm_timing.get_end_time():
+            chunk = [n for n in m_notes if t <= n.start < t + WIN]
+            if len(chunk) >= 12:
+                wins.append((t, key_estimate(chunk)[0]["key"]))
+            t += WIN
+        flags, i = [], 0
+        while i < len(wins):
+            t0, kname = wins[i]
+            if (kname.lower() == args.key.lower()
+                    or m21_key(kname).sharps == global_sharps):
+                i += 1
+                continue
+            j = i
+            while j + 1 < len(wins) and wins[j + 1][1] == kname:
+                j += 1
+            if j > i:  # 2+ consecutive windows agree on the foreign key
+                lo_s, hi_s = wins[i][0], wins[j][0] + WIN
+                changes["respelled"] += respell_toward(kname, lo=lo_s * qps, hi=hi_s * qps)
+                flags.append({"approx_start_s": round(lo_s, 1),
+                              "approx_end_s": round(hi_s, 1), "local_key": kname})
+            i = j + 1
+        if flags:
+            changes["modulation_flags"] = flags
 
     score.write("musicxml", fp=args.output)
     changes["output"] = args.output
