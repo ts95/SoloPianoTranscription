@@ -79,7 +79,7 @@ MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 "$MSCORE" output/<slug>/<slug>.musicxml -o output/<slug>/<slug>.mscz
 ```
 
-`transcription_cleanup.py` also provides `analyze` (read-only JSON report: key/meter/tempo estimates, artifact candidates, rubato, fast runs), `beats` (beat tracking seeded with a known BPM — librosa on the recording, or `--from-midi` to DP-track the transcription's own onsets, which follows deep ritardandi the audio tracker cannot), `verify` (render + per-bar chroma comparison against the recording), `consensus` (cross-check against pitch-shifted re-transcriptions), and `clean`/`post` (the cleanup-score machinery).
+`transcription_cleanup.py` also provides `analyze` (read-only JSON report: key/meter/tempo estimates, artifact candidates, rubato, fast runs), `beats` (beat tracking seeded with a known BPM — librosa on the recording, or `--from-midi` to DP-track the transcription's own onsets, which follows deep ritardandi the audio tracker cannot, or `--refine` to lock a fixed grid to the hinted tempo and smoothly refine it to the onsets — best for steady syncopated grooves that mislead both trackers), `verify` (render + per-bar chroma comparison against the recording), `consensus` (cross-check against pitch-shifted re-transcriptions), and `clean`/`post` (the cleanup-score machinery).
 
 ## Limitations and notes
 

@@ -40,6 +40,8 @@ Interpret the JSON with musical judgment:
   ```
 
   (Works on the mp3 too for pre-WAV pieces.) Always pass `--bpm-hint` when ground truth exists — it pins the metrical level; without it the tracker can lock onto a sub-pulse exactly like the autocorrelation does. **Grid choice**: if the beats report says "steady", use the fixed `--bpm` grid in step 4 (cleaner notation); if "some rubato"/"rubato", use `--beats` so barlines follow the performance. Heavy rubato still gets flagged prominently either way.
+
+  **Validate the grid before quantizing with it** — fraction of MIDI onsets within 0.07 beat of a 16th slot (`onset_grid_fit` in the `--refine` report; compute the same metric by hand for other grids). A grid scoring ~0.25 mis-snaps most notes (shifted melody, false dotted rhythms). On syncopated grooves (3-3-2) *both* the audio tracker and `--from-midi` chase the accent layer; there use `beats --refine <mid> --bpm-hint <bpm> --midi-shift <trim_shift_s>` — fixed grid scanned around the hint, smoothly refined to the onsets, level-locked. ~0.7 with onset-position peaks centered on the 16th slots is healthy for human grooves.
 - **Thresholds**: review the `artifact_candidates`/`ghost_candidates` samples. Be conservative: when a candidate might be a real grace note or ornament, keep it (raise `--vel-ratio` down / `--min-dur` down) and flag it instead.
 
 ## 3. Clean the MIDI

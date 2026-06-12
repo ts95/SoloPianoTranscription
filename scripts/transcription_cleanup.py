@@ -1175,34 +1175,119 @@ def track_beats_from_midi(mid_path, bpm_hint, lam=6.0, mu=1.0):
     weights = [c[1] / wmax for c in clusters]
     ph = 60.0 / bpm_hint
     pmin, pmax = 0.6 * ph, 1.9 * ph
+    max_span = 16  # longest bridgeable silence, in beats (sustained chords/rests)
     n = len(times)
-    best, prev, per = [-1e9] * n, [-1] * n, [ph] * n
+    best, prev, per, steps = [-1e9] * n, [-1] * n, [ph] * n, [1] * n
     for i in range(n):
         if times[i] - times[0] < 2.0:
             best[i] = weights[i]
-        lo = _bisect.bisect_left(times, times[i] - pmax)
+        lo = _bisect.bisect_left(times, times[i] - max_span * pmax)
         for j in range(lo, i):
-            p = times[i] - times[j]
-            if not (pmin <= p <= pmax) or best[j] < -1e8:
+            if best[j] < -1e8:
                 continue
-            cost = lam * math.log(p / per[j]) ** 2 + mu * math.log(p / ph) ** 2
-            sc = best[j] + weights[i] - cost
-            if sc > best[i]:
-                best[i], prev[i], per[i] = sc, j, 0.7 * per[j] + 0.3 * p
+            gap = times[i] - times[j]
+            # the gap may span several beats (a held chord or rest yields no
+            # onset clusters): try each step count whose per-beat period is
+            # plausible; the k-1 silent beats earn no onset reward, so long
+            # spans only win where no denser chain exists
+            k_lo = max(1, math.ceil(gap / pmax))
+            k_hi = min(max_span, int(gap / pmin))
+            for k in range(k_lo, k_hi + 1):
+                p = gap / k
+                cost = lam * math.log(p / per[j]) ** 2 + mu * math.log(p / ph) ** 2
+                sc = best[j] + weights[i] - cost * k
+                if sc > best[i]:
+                    best[i], prev[i], steps[i] = sc, j, k
+                    per[i] = 0.7 * per[j] + 0.3 * p
     end = max((i for i in range(n) if times[i] > times[-1] - 2.5),
               key=lambda i: best[i])
     seq = []
     i = end
     while i != -1:
         seq.append(times[i])
-        i = prev[i]
+        j = prev[i]
+        if j != -1 and steps[i] > 1:
+            # lay interpolated beats through the bridged silence
+            for m in range(1, steps[i]):
+                seq.append(times[j] + (times[i] - times[j]) * m / steps[i])
+        i = j
     return sorted(seq)
+
+
+def refine_fixed_grid_to_midi(mid_path, bpm_hint, midi_shift=0.0):
+    """Fixed-BPM beat grid refined smoothly to the transcription's onsets.
+    For near-steady performances whose strong syncopations (e.g. a 3-3-2 groove)
+    pull both the audio tracker and the onset DP onto the accent layer: the
+    metrical level is locked by construction (scan BPM x phase around the hint
+    for the best straight-grid fit), then each beat is nudged by the smoothed
+    local median residual of onsets to their nearest 16th slot, so slow drift
+    is followed but syncopation cannot bend the grid. Returns (beats in the
+    audio timeline, onset_grid_fit) — fit is the fraction of onsets within
+    0.07 beat of a 16th slot; peaks centered on slots matter more than the
+    absolute value (human jitter widens the tolerance band)."""
+    import bisect as _bisect
+    import pretty_midi
+    pm = pretty_midi.PrettyMIDI(mid_path)
+    onsets = sorted({round(n.start + midi_shift, 3)
+                     for inst in pm.instruments for n in inst.notes})
+    on = np.array(onsets)
+
+    best = (0, bpm_hint, 0.0)
+    for bpm in np.arange(bpm_hint - 1.5, bpm_hint + 1.51, 0.1):
+        period = 60 / bpm
+        for phase in np.arange(0, period, period / 100):
+            x = (on - phase) / period * 4
+            ok = int(np.sum(np.abs(x - np.round(x)) / 4 <= 0.07))
+            if ok > best[0]:
+                best = (ok, bpm, phase)
+    _, bpm, phase = best
+    period = 60 / bpm
+    k0 = int(np.floor((on[0] - phase) / period)) - 1
+    k1 = int(np.ceil((on[-1] - phase) / period)) + 2
+    beats = phase + period * np.arange(k0, k1)
+
+    for w in (16, 12, 8, 6, 4):  # shrinking smoothing window: coarse-to-fine drift
+        bl = beats.tolist()
+        res = [[] for _ in beats]
+        for t in onsets:
+            i = _bisect.bisect_right(bl, t) - 1
+            if not (0 <= i < len(beats) - 1):
+                continue
+            p = beats[i + 1] - beats[i]
+            frac = (t - beats[i]) / p
+            r = (frac * 4 - round(frac * 4)) / 4 * p
+            res[i + (1 if frac > 0.5 else 0)].append(r)
+        off = np.array([statistics.median(r) if r else np.nan for r in res])
+        idx = np.arange(len(off))
+        valid = ~np.isnan(off)
+        off = np.interp(idx, idx[valid], off[valid])
+        beats = beats + np.convolve(off, np.ones(w) / w, mode="same")
+
+    bl = beats.tolist()
+    devs = []
+    for t in onsets:
+        i = _bisect.bisect_right(bl, t) - 1
+        if 0 <= i < len(beats) - 1:
+            frac = (t - bl[i]) / (bl[i + 1] - bl[i])
+            devs.append(abs(frac * 4 - round(frac * 4)) / 4)
+    fit = sum(1 for d in devs if d <= 0.07) / len(devs) if devs else 0.0
+    return bl, fit
 
 
 def cmd_beats(args):
     """Beat-track the recording with librosa, or — with --from-midi — track the
-    transcription's own onsets (preferred for heavy rubato); write beats.json."""
-    if args.from_midi:
+    transcription's own onsets (preferred for heavy rubato), or — with --refine
+    — refine a fixed grid to the onsets (groove pieces); write beats.json."""
+    onset_grid_fit = None
+    if args.refine:
+        if not args.bpm_hint:
+            print("--refine requires --bpm-hint", file=sys.stderr)
+            return 1
+        tracked, onset_grid_fit = refine_fixed_grid_to_midi(
+            args.refine, args.bpm_hint, args.midi_shift)
+        beats = [round(float(b), 4) for b in tracked]
+        tempo = args.bpm_hint
+    elif args.from_midi:
         tracked = track_beats_from_midi(args.from_midi, args.bpm_hint or 120.0)
         beats = [round(float(b) + args.midi_shift, 4) for b in tracked]
         tempo = (args.bpm_hint or 120.0)
@@ -1230,7 +1315,8 @@ def cmd_beats(args):
     cv = (statistics.stdev(periods) / statistics.mean(periods)) if len(periods) > 2 else None
     report = {
         "audio": args.input,
-        "source": "midi-onsets" if args.from_midi else "audio",
+        "source": ("fixed-grid-refined-to-midi-onsets" if args.refine
+                   else "midi-onsets" if args.from_midi else "audio"),
         "bpm_hint": args.bpm_hint,
         "tempo_global_bpm": round(float(np.atleast_1d(tempo)[0]), 1),
         "tempo_median_bpm": round(60 / statistics.median(periods), 1) if periods else None,
@@ -1241,6 +1327,8 @@ def cmd_beats(args):
                       else "rubato"),
         "beats": beats,
     }
+    if onset_grid_fit is not None:
+        report["onset_grid_fit"] = round(onset_grid_fit, 3)
     if args.bpm_hint and periods:
         ratio = (60 / statistics.median(periods)) / args.bpm_hint
         if abs(ratio - 1) > 0.08:
@@ -1793,6 +1881,12 @@ def main():
                    help="track the (cleaned) MIDI's own onsets instead of the audio "
                         "— follows deep ritardandi the audio tracker cannot; the "
                         "audio argument is then used for the report only")
+    b.add_argument("--refine",
+                   help="MIDI path: fixed grid scanned around --bpm-hint, then "
+                        "smoothly refined to the MIDI's onsets — level-locked, for "
+                        "near-steady grooves (e.g. 3-3-2) whose syncopated accents "
+                        "mislead both the audio tracker and the onset DP; requires "
+                        "--bpm-hint; report includes onset_grid_fit")
     b.add_argument("--midi-shift", type=float, default=0.0,
                    help="seconds to ADD to MIDI-tracked beats so beats.json stays in "
                         "the audio timeline (the clean pass's trim_shift_s)")
