@@ -1757,14 +1757,26 @@ def cmd_post(args):
                 0, m21tempo.MetronomeMark(number=mark_bpm))
             changes["tempo_marked_bpm"] = mark_bpm
 
-    # Pedal markings from CC64 regions captured by the clean pass.
+    # Pedal markings from CC64: either the clean pass's report, or a .mid
+    # directly (stage-3 conversion has no clean report — the score must still
+    # reflect the performance's actual pedaling).
     if args.pedal_from:
-        with open(args.pedal_from) as f:
-            clean_report = json.load(f)
-        regions = clean_report.get("pedal_regions", [])
-        tempo = clean_report.get("tempo_bpm")
-        if qps is None and warp is None and tempo:
-            qps = tempo / 60.0  # fallback when --dynamics-from wasn't given
+        if args.pedal_from.lower().endswith((".mid", ".midi")):
+            pm_pedal = pretty_midi.PrettyMIDI(args.pedal_from)
+            regions = pedal_regions(pm_pedal)
+            if qps is None and warp is None:
+                # same robust linear scale as dynamics: score length over MIDI
+                # length, never a trusted tempo number
+                end_t = pm_pedal.get_end_time()
+                if end_t > 0 and score.highestTime > 0:
+                    qps = (float(score.highestTime) - shift_q) / end_t
+        else:
+            with open(args.pedal_from) as f:
+                clean_report = json.load(f)
+            regions = clean_report.get("pedal_regions", [])
+            tempo = clean_report.get("tempo_bpm")
+            if qps is None and warp is None and tempo:
+                qps = tempo / 60.0  # fallback when --dynamics-from wasn't given
         if not hasattr(expressions, "PedalMark"):
             changes["pedal_note"] = (f"{len(regions)} pedal regions in report, but this music21 "
                                      "lacks PedalMark — add pedal manually in MuseScore")
@@ -1994,7 +2006,9 @@ def main():
     p.add_argument("output")
     p.add_argument("--key", help='e.g. "D major" — drives enharmonic respelling')
     p.add_argument("--time-sig", help='e.g. "3/4" — re-bar at this meter')
-    p.add_argument("--pedal-from", help="clean-pass JSON report containing pedal_regions")
+    p.add_argument("--pedal-from", help="pedal source: the clean-pass JSON report "
+                                        "(pedal_regions), or a .mid to read CC64 from "
+                                        "directly (stage-3 conversion without a clean pass)")
     p.add_argument("--dynamics-from", help="cleaned .mid — derive dynamics/hairpins from velocities")
     p.add_argument("--beats", help="beats.json — map seconds to offsets through the beat "
                                    "warp (must match what quantize used)")

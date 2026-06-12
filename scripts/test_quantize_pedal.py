@@ -42,6 +42,27 @@ def make_midi(path):
     pm.write(path)
 
 
+def test_pedal_marks_from_mid():
+    """post --pedal-from <mid>: the engraved pedal must reflect the MIDI's
+    actual CC64 regions, with no clean-report JSON required (stage 3)."""
+    with tempfile.TemporaryDirectory() as d:
+        mid = os.path.join(d, "t.mid")
+        xml = os.path.join(d, "t.musicxml")
+        out = os.path.join(d, "t.pedal.musicxml")
+        make_midi(mid)
+        subprocess.run([PY, SCRIPT, "quantize", mid, xml, "--bpm", "120",
+                        "--time-sig", "4/4", "--bar-phase", "0"],
+                       capture_output=True, text=True, check=True)
+        r = subprocess.run([PY, SCRIPT, "post", xml, out, "--pedal-from", mid],
+                           capture_output=True, text=True, check=True)
+        summary = json.loads(r.stdout)
+        assert summary["pedal_marks"] == 1, (
+            f"expected 1 pedal mark for the single CC64 region, "
+            f"got {summary['pedal_marks']} (note: {summary.get('pedal_note')})")
+        assert "<pedal" in open(out).read(), "no <pedal> direction in MusicXML"
+    print("ok: pedal marks engraved from the MIDI's CC64")
+
+
 def test_pedal_smear_not_engraved():
     with tempfile.TemporaryDirectory() as d:
         mid = os.path.join(d, "t.mid")
@@ -71,3 +92,4 @@ def test_pedal_smear_not_engraved():
 
 if __name__ == "__main__":
     test_pedal_smear_not_engraved()
+    test_pedal_marks_from_mid()

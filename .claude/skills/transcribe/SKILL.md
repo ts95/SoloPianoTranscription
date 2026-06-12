@@ -43,6 +43,10 @@ Follow the `midi-to-musicxml` skill (exports both formats). **Never feed the `.m
 # else an analyze candidate — see the midi-to-musicxml skill for validation.
 .venv/bin/python scripts/transcription_cleanup.py quantize \
   'output/<slug>/<slug>.mid' 'output/<slug>/<slug>.musicxml' --bpm <bpm>
+# Pedal rule: the score must reflect the MIDI's actual CC64 pedaling
+.venv/bin/python scripts/transcription_cleanup.py post \
+  'output/<slug>/<slug>.musicxml' 'output/<slug>/<slug>.musicxml' \
+  --pedal-from 'output/<slug>/<slug>.mid'
 MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 "$MSCORE" 'output/<slug>/<slug>.musicxml' -o 'output/<slug>/<slug>.mscz'
 ```

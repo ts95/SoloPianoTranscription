@@ -48,11 +48,15 @@ mv 'output/<slug>/<slug>.prepared.wav' 'output/<slug>/<slug>.wav'
 .venv/bin/transkun 'output/<slug>/<slug>.wav' 'output/<slug>/<slug>.mid' --device cpu
 
 # 3. MIDI → MusicXML (script quantizer — NEVER MuseScore's MIDI import),
-#    then .mscz via mscore (format conversion only).
+#    then the pedal pass (the score must reflect the MIDI's actual CC64
+#    pedaling), then .mscz via mscore (format conversion only).
 #    BPM from the user / web ground truth, else an analyze candidate;
 #    verify via score_seconds_at_bpm ≈ audio_seconds in the summary.
 .venv/bin/python scripts/transcription_cleanup.py quantize \
   'output/<slug>/<slug>.mid' 'output/<slug>/<slug>.musicxml' --bpm <bpm>
+.venv/bin/python scripts/transcription_cleanup.py post \
+  'output/<slug>/<slug>.musicxml' 'output/<slug>/<slug>.musicxml' \
+  --pedal-from 'output/<slug>/<slug>.mid'
 MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 "$MSCORE" 'output/<slug>/<slug>.musicxml' -o 'output/<slug>/<slug>.mscz'
 ```

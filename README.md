@@ -72,9 +72,13 @@ ffmpeg -i output/<slug>/<slug>.wav -codec:a libmp3lame -q:a 0 output/<slug>/<slu
 # 2. Transcribe to MIDI (takes a few minutes on CPU)
 .venv/bin/transkun output/<slug>/<slug>.wav output/<slug>/<slug>.mid --device cpu
 
-# 3. Quantize to MusicXML (BPM from ground truth or analysis), then convert to .mscz
+# 3. Quantize to MusicXML (BPM from ground truth or analysis), engrave the
+#    MIDI's actual CC64 pedaling, then convert to .mscz
 .venv/bin/python scripts/transcription_cleanup.py quantize \
   output/<slug>/<slug>.mid output/<slug>/<slug>.musicxml --bpm <bpm>
+.venv/bin/python scripts/transcription_cleanup.py post \
+  output/<slug>/<slug>.musicxml output/<slug>/<slug>.musicxml \
+  --pedal-from output/<slug>/<slug>.mid
 MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 "$MSCORE" output/<slug>/<slug>.musicxml -o output/<slug>/<slug>.mscz
 ```

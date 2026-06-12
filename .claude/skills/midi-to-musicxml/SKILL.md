@@ -34,6 +34,15 @@ Treat `bpm_candidates` with suspicion: autocorrelation locks onto the dominant *
 
 Add `--key 'D major'` / `--time-sig '4/4'` when known. **Metadata rule**: always pass `--title` and `--composer`; add `--arranger` (cover/arrangement author) and `--performer` (pianist) when known — generated scores must identify the piece in their header. In the JSON summary, `score_seconds_at_bpm` must be within a few percent of `audio_seconds` — a big mismatch means the BPM is wrong; pick another candidate.
 
+**Pedal rule**: the score must reflect the MIDI's actual pedaling. If the `.mid` carries CC64 events (Transkun transcriptions do), engrave them:
+
+```bash
+.venv/bin/python scripts/transcription_cleanup.py post \
+  '<output>.musicxml' '<output>.musicxml' --pedal-from '<input>.mid'
+```
+
+(Without `--key`/`--time-sig` this is pedal-only — no re-bar, no respelling.) Check the summary: `pedal_marks` should be close to `analyze`'s `pedal_cc64_regions` count; `0` plus a `pedal_note` means the regions could not be mapped — deliver anyway but say the pedaling is missing. Skip this step only when the MIDI genuinely has no CC64 (then there is no pedaling to reflect).
+
 ## 3. Convert to .mscz with MuseScore (format conversion only)
 
 ```bash
