@@ -364,6 +364,140 @@ def cmd_clean(args):
 
 # Single-symbol note values (incl. dotted), longest first, for duration snapping.
 EXPRESSIBLE_QL = [6, 4, 3, 2, 1.5, 1, 0.75, 0.5, 0.375, 0.25, 0.1875, 0.125, 0.0625]
+# Tuplet durations music21 can express as single symbols (triplet 4th/8th/16th/32nd).
+TUPLET_QL = ["2/3", "1/3", "1/6", "1/12"]
+
+
+def snap_dur_down_ql(ql):
+    """Largest single-symbol binary duration <= ql (clip repair stays binary —
+    a stray tuplet value outside a ternary context corrupts tuplet groups)."""
+    from fractions import Fraction
+    for c in sorted((Fraction(str(x)) for x in EXPRESSIBLE_QL), reverse=True):
+        if c <= ql:
+            return c
+    return Fraction(1, 16)
+
+
+def build_measured_part(items, marks, ts_str, part_id):
+    """Re-bar possibly-overlapping (offset, Note/Chord) items into a PartStaff.
+
+    Overlaps (sustained melody/bass notes ringing over other onsets) are split
+    greedily into at most two non-overlapping layers, each layer is sliced at
+    barlines and measured, and the layers are zipped into per-measure music21
+    Voices — naive makeMeasures on overlapping flat content lays the layers
+    out SEQUENTIALLY (3x-overfull measures, mscore exit 40). A third
+    concurrent layer clips the earlier note instead. `marks` are zero-duration
+    elements (key/time signatures, text directions) for layer 1.
+    """
+    from fractions import Fraction
+    from music21 import meter as m21meter, stream as m21stream
+    from music21.stream import Measure, Voice
+
+    layers, ends = [[], []], [None, None]
+    for off, el in sorted(items, key=lambda x: x[0]):
+        dur = el.duration.quarterLength
+        idx = next((i for i in range(2) if ends[i] is None or ends[i] <= off), None)
+        if idx is None:
+            idx = 0 if ends[0] <= ends[1] else 1
+            prev_off, prev = layers[idx][-1]
+            clipped = snap_dur_down_ql(max(off - prev_off, Fraction(1, 16)))
+            prev.duration.quarterLength = clipped
+        layers[idx].append((off, el))
+        ends[idx] = off + el.duration.quarterLength
+
+    ts = m21meter.TimeSignature(ts_str)
+    bar_ql = ts.barDuration.quarterLength
+    top = max((e for e in ends if e is not None), default=0)
+    bar_offsets = [i * bar_ql for i in range(1, int(float(top) // float(bar_ql)) + 1)]
+
+    rebarred = []
+    for li, layer in enumerate(layers):
+        if not layer:
+            continue
+        s = m21stream.Stream()
+        s.insert(0, m21meter.TimeSignature(ts_str))
+        if li == 0:
+            for off, mk in marks:
+                s.insert(off, mk)
+        for off, el in layer:
+            s.insert(off, el)
+        s.sliceAtOffsets(bar_offsets, addTies=True, inPlace=True)
+        rebarred.append(s.makeMeasures())
+
+    ps = m21stream.PartStaff(id=part_id)
+    if len(rebarred) == 1:
+        for el in rebarred[0]:
+            ps.insert(el.offset, el)
+        return ps
+    second = {m.measureNumber: m for m in rebarred[1].getElementsByClass(Measure)}
+    for m1 in rebarred[0]:
+        if isinstance(m1, Measure):
+            m2 = second.get(m1.measureNumber)
+            if m2 is not None and m2.notes:
+                v1, v2 = Voice(id="1"), Voice(id="2")
+                for el in list(m1.notesAndRests):
+                    off_in_m = el.getOffsetBySite(m1)  # before remove: offset
+                    m1.remove(el)                      # falls back to another site
+                    v1.insert(off_in_m, el)
+                for el in list(m2.notesAndRests):
+                    off_in_m = el.getOffsetBySite(m2)
+                    m2.remove(el)
+                    v2.insert(off_in_m, el)
+                m1.insert(0, v1)
+                m1.insert(0, v2)
+        ps.insert(m1.offset, m1)
+    return ps
+
+
+def assign_hands(notes):
+    """Greedy time-ordered hand assignment. For each onset slot, choose the
+    split of its (pitch-sorted) notes that minimizes: within-hand span beyond
+    a 9th, movement from each hand's previous position, and out-of-register
+    placement. Handles crossings and sweeping arpeggios that a static pitch
+    threshold cannot. Returns {id(note): "treble"|"bass"}."""
+    slots, cur = [], [notes[0]]
+    for a, b in zip(notes, notes[1:]):
+        if b.start - a.start <= ONSET_TOLERANCE:
+            cur.append(b)
+        else:
+            slots.append(cur)
+            cur = [b]
+    slots.append(cur)
+
+    out, left, right = {}, None, None
+    for slot in slots:
+        ps = sorted(slot, key=lambda n: n.pitch)
+        best_cost, best_k = None, len(ps)
+        for k in range(len(ps) + 1):
+            lo, hi = ps[:k], ps[k:]
+            cost = 0.0
+            for grp in (lo, hi):
+                if grp:
+                    span = grp[-1].pitch - grp[0].pitch
+                    if span > 14:  # beyond a 9th: unplayable as one hand
+                        cost += (span - 14) * 2.0
+            mlo = lo[len(lo) // 2].pitch if lo else None
+            mhi = hi[len(hi) // 2].pitch if hi else None
+            if mlo is not None and left is not None:
+                cost += abs(mlo - left) * 0.25
+            if mhi is not None and right is not None:
+                cost += abs(mhi - right) * 0.25
+            if mlo is not None and mlo > 67:  # LH far above G4
+                cost += (mlo - 67) * 0.6
+            if mhi is not None and mhi < 52:  # RH far below E3
+                cost += (52 - mhi) * 0.6
+            if best_cost is None or cost < best_cost:
+                best_cost, best_k = cost, k
+        lo, hi = ps[:best_k], ps[best_k:]
+        for n in lo:
+            out[id(n)] = "bass"
+        for n in hi:
+            out[id(n)] = "treble"
+        if lo:
+            left = lo[len(lo) // 2].pitch
+        if hi:
+            right = hi[len(hi) // 2].pitch
+    return out
 
 
 def load_beat_times(path, shift=0.0):
@@ -485,13 +619,36 @@ def cmd_quantize(args):
         return 1
 
     grid = Fraction(4, args.grid)  # e.g. --grid 32 -> 1/8 quarterLength
-    expressible = sorted((Fraction(str(x)) for x in EXPRESSIBLE_QL), reverse=True)
-    split_name = (hand_split(notes)["suggested_split"] if args.split == "auto"
-                  else args.split)
-    split = pretty_midi.note_name_to_number(split_name)
+    expressible_binary = sorted((Fraction(str(x)) for x in EXPRESSIBLE_QL), reverse=True)
+    # Inside a ternary beat only tuplet-family values are allowed — a stray
+    # binary duration there produces incomplete tuplet groups that MuseScore
+    # rejects as corrupt (exit 40).
+    expressible_ternary = sorted((Fraction(x) for x in ["1"] + TUPLET_QL), reverse=True)
 
     summary = {"input": args.input, "output": args.output,
-               "grid": f"1/{args.grid}", "hand_split": split_name, "staves": {}}
+               "grid": f"1/{args.grid}", "staves": {}}
+
+    # Hand assignment: cost-based (span/movement/register, handles crossings)
+    # unless a fixed split pitch was requested. Falls back to the static split
+    # if the cost model disagrees with it implausibly often.
+    static_split = pretty_midi.note_name_to_number(
+        hand_split(notes)["suggested_split"] if args.split == "auto" else args.split)
+    if args.split == "auto":
+        hands = assign_hands(notes)
+        moved = sum(1 for n in notes
+                    if hands[id(n)] != ("treble" if n.pitch >= static_split else "bass"))
+        if moved > 0.4 * len(notes):
+            hands = {id(n): ("treble" if n.pitch >= static_split else "bass")
+                     for n in notes}
+            summary["hand_split"] = {"mode": "static (cost model disagreed on "
+                                             f"{moved} notes — suspicious, kept it simple)"}
+        else:
+            summary["hand_split"] = {"mode": "cost-based",
+                                     "differs_from_static_split": moved}
+    else:
+        hands = {id(n): ("treble" if n.pitch >= static_split else "bass")
+                 for n in notes}
+        summary["hand_split"] = {"mode": f"static at {args.split}"}
 
     warp, beat_times, warp_base = None, None, 0
     if args.beats:
@@ -517,14 +674,66 @@ def cmd_quantize(args):
             return Fraction(warp(t) - warp_base).limit_denominator(100000)
         return Fraction(t).limit_denominator(100000) * bpm / 60
 
-    def snap(ql):
-        return round(ql / grid) * grid
-
-    def dur_down(ql):
-        for c in expressible:
+    def dur_down(ql, ternary=False):
+        for c in (expressible_ternary if ternary else expressible_binary):
             if c <= ql:
                 return c
         return grid
+
+    # Per-beat subdivision selection: each beat picks the division (binary or
+    # ternary) that best explains its onsets, with a complexity prior and a
+    # bonus for the piece's prevailing division (Temperley-style). Genuine
+    # triplets become real tuplets instead of being forced onto a binary grid.
+    fracs_by_beat = {}
+    for n in notes:
+        q = float(to_ql(n.start))
+        b = max(0, int(q))
+        fracs_by_beat.setdefault(b, []).append(max(0.0, q - b))
+
+    # Swing: off-eighths clustering at 2/3 of the beat instead of 1/2 are
+    # notated straight + a "Swing" text, per engraving convention.
+    def near(f, x, tol=0.07):
+        return abs(f - x) <= tol
+    straight8 = sum(1 for fs in fracs_by_beat.values() for f in fs if near(f, 0.5))
+    swung8 = sum(1 for fs in fracs_by_beat.values() for f in fs if near(f, 2 / 3))
+    swing = swung8 >= 24 and swung8 > 2 * straight8
+    if swing:
+        summary["swing"] = (f"{swung8} off-eighths near 2/3 vs {straight8} near 1/2 — "
+                            "notated straight with a Swing direction")
+
+    DIV_COMPLEXITY = {1: 0.0, 2: 0.0, 4: 0.05, 3: 0.12, 6: 0.2, 8: 0.22}
+    max_div = max(d for d in DIV_COMPLEXITY if d <= args.grid // 4) if args.grid >= 8 else 8
+
+    def deswing(fs):
+        return [0.5 if swing and 0.55 <= f <= 0.78 else f for f in fs]
+
+    def best_div(fs, bonus_d=None):
+        best, best_score = 8, None
+        for d, comp in DIV_COMPLEXITY.items():
+            if d > max_div:
+                continue
+            err = sum(min(abs(f - k / d) for k in range(d + 1)) for f in fs) / len(fs)
+            score = err + comp - (0.04 if d == bonus_d else 0.0)
+            if best_score is None or score < best_score:
+                best_score, best = score, d
+        return best
+
+    from collections import Counter
+    first_pass = {b: best_div(deswing(fs)) for b, fs in fracs_by_beat.items()}
+    mode_div = Counter(first_pass.values()).most_common(1)[0][0]
+    div_by_beat = {b: best_div(deswing(fs), bonus_d=mode_div)
+                   for b, fs in fracs_by_beat.items()}
+    summary["subdivisions"] = dict(Counter(div_by_beat.values()))
+
+    def snap(ql):
+        q = float(ql)
+        b = max(0, int(q))
+        f = max(0.0, q - b)
+        if swing and 0.55 <= f <= 0.78:
+            f = 0.5
+        d = div_by_beat.get(b, max_div)
+        k = round(f * d)
+        return Fraction(b) + Fraction(k, d)
 
     # Downbeat phase from meter-induction cues; bar 1 beat 1 should be a downbeat.
     ts_parts = (args.time_sig or "4/4").split("/")
@@ -546,40 +755,12 @@ def cmd_quantize(args):
             summary["bar_phase"]["pickup"] = (
                 "weak downbeat evidence — kept first onset on beat 1; verify by ear")
 
-    score = m21stream.Score()
-    for name, hand in (("treble", [n for n in notes if n.pitch >= split]),
-                       ("bass", [n for n in notes if n.pitch < split])):
-        slots = {}
-        for n in hand:
-            slots.setdefault(snap(to_ql(n.start)), []).append(n)
-        onsets = sorted(slots)
-        ps = m21stream.PartStaff(id=f"P1-{name}")
-        if args.key:
-            tonic, mode = args.key.split()[0], (args.key.split() + ["major"])[1]
-            ps.insert(0, m21key.KeySignature(m21key.Key(tonic, mode).sharps))
-        if args.time_sig:
-            ps.insert(0, m21meter.TimeSignature(args.time_sig))
-        capped = 0
-        for i, off in enumerate(onsets):
-            group = slots[off]
-            raw_dur = max(to_ql(n.end) - off for n in group)
-            cap = onsets[i + 1] - off if i + 1 < len(onsets) else raw_dur
-            if raw_dur > cap:
-                capped += 1
-            pitches = sorted({n.pitch for n in group})
-            el = (m21note.Note(pitches[0]) if len(pitches) == 1
-                  else m21chord.Chord(pitches))
-            el.duration = m21dur.Duration(dur_down(max(min(raw_dur, cap), grid)))
-            ps.insert(off + pad, el)
-        score.insert(0, ps)
-        summary["staves"][name] = {"events": len(onsets), "durations_capped_at_next_onset": capped}
-
     # Tempo-trend text where the tracked tempo deviates persistently (>=4 beats,
     # >7%) from the median: rit. / accel., and a tempo on recovery.
+    tempo_texts = []
     if warp and beat_times:
-        treble_ps = score.parts[0]
         med = statistics.median(periods)
-        marks, state = [], None
+        state = None
         for k in range(len(periods) - 3):
             beat_off = k - warp_base + int(pad)
             if beat_off < 0:
@@ -588,18 +769,76 @@ def cmd_quantize(args):
             trend = ("rit." if window > med * 1.07
                      else "accel." if window < med * 0.93 else None)
             if trend != state and (trend or state):
-                label = trend if trend else "a tempo"
-                marks.append((beat_off, label))
+                tempo_texts.append((beat_off, trend if trend else "a tempo"))
                 state = trend
-        if 0 < len(marks) <= 12:
-            for beat_k, label in marks:
+        if len(tempo_texts) > 12:
+            summary["tempo_marks"] = (f"{len(tempo_texts)} tempo swings detected — too "
+                                      "many to mark; treat the piece as rubato throughout")
+            tempo_texts = []
+        elif tempo_texts:
+            summary["tempo_marks"] = [{"beat": b, "mark": m} for b, m in tempo_texts]
+
+    ts_str = args.time_sig or "4/4"
+    score = m21stream.Score()
+    for name in ("treble", "bass"):
+        hand = [n for n in notes if hands[id(n)] == name]
+        slots = {}
+        for n in hand:
+            slots.setdefault(snap(to_ql(n.start)), []).append(n)
+        onsets = sorted(slots)
+        marks = []
+        if args.key:
+            tonic, mode = args.key.split()[0], (args.key.split() + ["major"])[1]
+            marks.append((0, m21key.KeySignature(m21key.Key(tonic, mode).sharps)))
+        if name == "treble":
+            if swing:
+                sw = m21expr.TextExpression("Swing")
+                sw.style.fontStyle = "bold"
+                marks.append((0, sw))
+            for beat_k, label in tempo_texts:
                 te = m21expr.TextExpression(label)
                 te.style.fontStyle = "italic"
-                treble_ps.insert(beat_k, te)
-            summary["tempo_marks"] = [{"beat": b, "mark": m} for b, m in marks]
-        elif len(marks) > 12:
-            summary["tempo_marks"] = (f"{len(marks)} tempo swings detected — too many "
-                                      "to mark; treat the piece as rubato throughout")
+                marks.append((beat_k, te))
+        items, capped, sustained = [], 0, 0
+        for i, off in enumerate(onsets):
+            group = slots[off]
+            raw_dur = max(to_ql(n.end) - off for n in group)
+            cap = onsets[i + 1] - off if i + 1 < len(onsets) else raw_dur
+            pitches = sorted({n.pitch for n in group})
+            dur = min(raw_dur, cap)
+            # Sustain exception: a lone melody/bass note that clearly rings on
+            # (>=1.5x the gap) over later onsets in other registers keeps its
+            # length — it becomes voice 2 of the staff at re-barring. The pedal
+            # marks carry whatever sustain this still clips.
+            if (len(pitches) == 1 and raw_dur >= cap * Fraction(3, 2)
+                    and not any(abs(p - pitches[0]) < 3
+                                for j in range(i + 1, len(onsets))
+                                if onsets[j] < off + raw_dur
+                                for p in {m.pitch for m in slots[onsets[j]]})):
+                dur = raw_dur
+                sustained += 1
+            elif raw_dur > cap:
+                capped += 1
+            # Keep durations metrically consistent with their beat's division:
+            # ternary-beat notes stay inside the beat (tuplet values only);
+            # binary durations may not END inside a ternary beat.
+            b_on = int(off)
+            ternary = div_by_beat.get(b_on, max_div) in (3, 6)
+            if ternary:
+                dur = min(dur, Fraction(b_on + 1) - off)
+            else:
+                end = off + dur
+                eb = int(end)
+                if end > eb and div_by_beat.get(eb) in (3, 6) and Fraction(eb) > off:
+                    dur = Fraction(eb) - off
+            el = (m21note.Note(pitches[0]) if len(pitches) == 1
+                  else m21chord.Chord(pitches))
+            el.duration = m21dur.Duration(dur_down(max(dur, grid), ternary))
+            items.append((off + pad, el))
+        score.insert(0, build_measured_part(items, marks, ts_str, f"P1-{name}"))
+        summary["staves"][name] = {"events": len(onsets),
+                                   "durations_capped_at_next_onset": capped,
+                                   "sustained_as_second_voice": sustained}
 
     score.write("musicxml", fp=args.output)
     end_t = pm.get_end_time()
@@ -751,33 +990,22 @@ def cmd_post(args):
                     target.insert(off, n)
                     changes["rehand_moved"] += 1
 
-    # MuseScore 4's MIDI import ignores time-signature meta events, so re-bar here:
-    # same note offsets/durations (the quantization grid is beat-level), new grouping.
-    # Build a fresh Score from the re-barred parts — mutating the original PartStaffs
-    # in place corrupts the two-staff merge at MusicXML export (overfull measures,
-    # mscore exit 40).
+    # Re-bar at the requested meter. build_measured_part handles overlapping
+    # content (sustained second-voice notes from quantize) by layering into
+    # music21 Voices — naive makeMeasures on overlapping flat content lays the
+    # layers out sequentially (overfull measures, mscore exit 40). Build a
+    # fresh Score from the re-barred parts; mutating the original PartStaffs
+    # in place corrupts the two-staff merge at MusicXML export.
     if args.time_sig:
-        from music21 import layout, stream as m21stream
+        from music21 import expressions as m21expr, key as m21keymod, layout, \
+            stream as m21stream
         new_parts = []
         for part in list(score.parts):
             flat = part.flatten()
-            for old in list(flat.getElementsByClass(meter.TimeSignature)):
-                flat.remove(old)
-            ts = meter.TimeSignature(args.time_sig)
-            flat.insert(0, ts)
-            # Split notes at the new barlines while the stream is still flat —
-            # makeTies on overlapping (unvoiced) measure content mis-splits.
-            bar_ql = ts.barDuration.quarterLength
-            bar_offsets = [i * bar_ql for i in range(1, int(flat.highestTime // bar_ql) + 1)]
-            flat.sliceAtOffsets(bar_offsets, addTies=True, inPlace=True)
-            # No manual makeVoices here: voices built with fillGaps=False export
-            # broken <forward> arithmetic (overfull measures, mscore exit 40);
-            # music21's own export-time notation pass voices overlaps correctly.
-            rebarred = flat.makeMeasures()
-            ps = m21stream.PartStaff(id=part.id)
-            for el in rebarred:
-                ps.insert(el.offset, el)
-            new_parts.append(ps)
+            items = [(n.offset, n) for n in flat.notes]
+            marks = [(el.offset, el) for el in flat.getElementsByClass(
+                (m21expr.TextExpression, m21keymod.KeySignature))]
+            new_parts.append(build_measured_part(items, marks, args.time_sig, part.id))
         new_score = m21stream.Score()
         for ps in new_parts:
             new_score.insert(0, ps)

@@ -62,7 +62,7 @@ MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 - `download-audio` — stage 1 only
 - `audio-to-midi` — stage 2 only (also works on local audio files the user provides)
 - `midi-to-musicxml` — stage 3 only (exports both .musicxml and .mscz)
-- `cleanup-score` — post-pipeline cleanup: web ground-truth lookup (key/meter), artifact removal, notation repair, velocity-derived dynamics/hairpins, `CLEANUP_NOTES.md` with verify-by-ear flags. Changes only what's decidable from data; never overwrites originals.
+- `cleanup-score` — post-pipeline cleanup: web ground-truth lookup (key/meter), artifact removal, notation repair, velocity-derived dynamics/hairpins, `CLEANUP_NOTES.md` with verify-by-ear flags. Changes only what's decidable from data; never overwrites originals. Supports MIDI-only mode (steps 1–3, `.cleaned.mid` + notes, no MusicXML/.mscz) when the user wants just a cleaned MIDI.
 
 ## Notation sanity (reason about the score, don't just convert)
 

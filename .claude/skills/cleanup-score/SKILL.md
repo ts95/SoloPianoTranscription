@@ -7,6 +7,8 @@ description: Clean up a transcribed score - remove transcription artifacts, fix 
 
 Input: a piece directory `output/<slug>/` (or any transcription `.mid`). Requires the raw `.mid`; the cleaned score is reconverted from it. **Never overwrite originals** — all products use the `.cleaned.*` suffix, plus a `CLEANUP_NOTES.md` report.
 
+**MIDI-only mode**: if the user asked for just a cleaned MIDI (no sheet music), run steps 1–3 and stop — `<slug>.cleaned.mid` is complete on its own (artifacts removed, trimmed, correct tempo/meter/key meta). Skip quantize/post/mscz, and base `CLEANUP_NOTES.md` on the clean report alone.
+
 Core principle: fix what is decidable from the data (or from published facts about the piece); anything that requires hearing the recording gets **flagged, not changed**.
 
 Tools: `scripts/transcription_cleanup.py` (run with `.venv/bin/python`), mscore at `/Applications/MuseScore 4.app/Contents/MacOS/mscore`, music21 in the venv for bespoke fixes.
@@ -69,7 +71,7 @@ MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 rm 'output/<slug>/<slug>.tmp.musicxml'
 ```
 
-`quantize` snaps onsets to the grid (default 32nd notes; `--grid` to change), merges same-slot notes into chords, caps durations at the next onset in the same staff (pedal marks carry the sustain), and splits hands at the analyzer-suggested pitch (`--split` to override). With `--beats` the grid is the tracked beat sequence (refined to MIDI onsets), so rubato and drift don't corrupt barlines, and persistent tempo deviations get `rit.`/`accel.`/`a tempo` text. Pass `--time-sig` so it can infer the **downbeat phase** from bass/harmony/agogic cues — if the piece starts mid-bar it opens bar 1 with rests and reports a pickup flag (always relay this to "verify by ear").
+`quantize` chooses a subdivision per beat (binary or ternary — genuine triplets become real tuplets; swing is detected and notated straight with a "Swing" direction), merges same-slot notes into chords, assigns hands with a cost model (span/movement/register — handles crossings; `--split E3` forces a static threshold), and caps durations at the next onset — except lone melody/bass notes that clearly ring over other registers, which become a second voice in the staff (check `sustained_as_second_voice` in the summary). With `--beats` the grid is the tracked beat sequence (refined to MIDI onsets), so rubato and drift don't corrupt barlines, and persistent tempo deviations get `rit.`/`accel.`/`a tempo` text. Pass `--time-sig` so it can infer the **downbeat phase** from bass/harmony/agogic cues — if the piece starts mid-bar it opens bar 1 with rests and reports a pickup flag (always relay this to "verify by ear").
 
 Check the summaries: fixed-grid `score_seconds_at_bpm` must be within a few percent of `audio_seconds`, and `post`'s `tempo_marked_bpm` should land near the chosen/tracked BPM — a mismatch means the BPM was wrong; go back to step 2. If quantize reports `offset_shift_beats`, pass that value to `post --offset-shift`.
 
