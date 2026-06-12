@@ -10,7 +10,8 @@ output/<slug>/<slug>.wav  (+ <slug>.mp3 listening copy)
     │  Transkun v2 (automatic piano transcription)
     ▼
 output/<slug>/<slug>.mid
-    │  transcription_cleanup.py quantize (fixed-BPM grid quantization, music21)
+    │  transcription_cleanup.py quantize (music21; fixed-BPM grid, or a beat-tracked
+    │  grid from librosa beat tracking when the performance has rubato)
     │  MuseScore 4 CLI (.musicxml → .mscz format conversion only)
     ▼
 output/<slug>/<slug>.musicxml + <slug>.mscz
@@ -36,7 +37,7 @@ Two design rules learned the hard way:
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install transkun yt-dlp music21
+pip install transkun yt-dlp music21 'llvmlite==0.42.0' 'numba==0.59.1' librosa
 ```
 
 Note: `transkun` depends on PyTorch, so the install downloads roughly 2 GB. The Transkun v2 model weights ship with the pip package — no separate download needed.
@@ -78,12 +79,12 @@ MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 "$MSCORE" output/<slug>/<slug>.musicxml -o output/<slug>/<slug>.mscz
 ```
 
-`transcription_cleanup.py` also provides `analyze` (read-only JSON report: key/meter/tempo estimates, artifact candidates, rubato, fast runs) and `clean`/`post` (the cleanup-score machinery).
+`transcription_cleanup.py` also provides `analyze` (read-only JSON report: key/meter/tempo estimates, artifact candidates, rubato, fast runs), `beats` (librosa beat tracking of the recording, seeded with a known BPM), and `clean`/`post` (the cleanup-score machinery).
 
 ## Limitations and notes
 
 - Transkun is trained on **solo piano**. Recordings with other instruments, vocals, or heavy room noise will transcribe poorly.
-- The MIDI Transkun produces has **performance timing** (exactly as played, unquantized). Quantization onto a fixed BPM grid is deliberate and conservative: durations are capped at the next onset (pedal marks carry the sustain), and the grid is binary (real triplets/swing get flagged for the ear). The `cleanup-score` skill handles the data-decidable part; what remains for a human ear is verifying pitches against the recording, the downbeat/pickup anchor, rubato barlines, tuplet decisions, ornaments, and dynamics/phrasing — listed per piece in `CLEANUP_NOTES.md`.
+- The MIDI Transkun produces has **performance timing** (exactly as played, unquantized). Quantization is deliberate and conservative — a fixed BPM grid for steady performances, a beat-tracked grid (librosa, seeded with the piece's known BPM, refined to MIDI onsets) when there's rubato, with downbeat/pickup inference from bass/harmony/agogic cues: durations are capped at the next onset (pedal marks carry the sustain), and the grid is binary (real triplets/swing get flagged for the ear). The `cleanup-score` skill handles the data-decidable part; what remains for a human ear is verifying pitches against the recording, the downbeat/pickup anchor, rubato barlines, tuplet decisions, ornaments, and dynamics/phrasing — listed per piece in `CLEANUP_NOTES.md`.
 - Transcription runs on CPU by default; expect a few minutes per piece.
 - Only transcribe recordings for personal study/use, and respect the rights of performers and composers.
 

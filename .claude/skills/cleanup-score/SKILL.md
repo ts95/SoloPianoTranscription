@@ -26,7 +26,14 @@ Interpret the JSON with musical judgment:
 - **Key**: prefer web ground truth; else top `key_estimates` entry. If ground truth and analysis disagree on a published work, trust ground truth and flag the disagreement. If neither is confident, omit `--key` and flag.
 - **Meter**: prefer ground truth. Statistically, the strongest `grouping_scores` entry suggests beats per bar — sanity-check `bpm_candidates` against the piece's character (a value can be double/half the true tempo).
 - **Tempo**: the BPM drives the entire quantization grid in step 4, so get it right. Prefer ground truth / the user's word over the statistical candidates: autocorrelation locks onto the dominant *pulse*, which can be a subdivision — not just 2×/half but e.g. the dotted-eighth of a 3-3-2 groove (4/3 of the true BPM; observed on an EDM cover where candidates said 171/86 and the truth was 125). Validate with the `quantize` summary's `score_seconds_at_bpm` vs `audio_seconds` fields, and check that `duration ÷ (60/bpm × beats-per-bar)` gives a plausible bar count.
-- **Rubato**: if `tempo_stability.verdict` is "heavy rubato", barlines will drift regardless of meter — proceed but flag prominently.
+- **Rubato**: check `tempo_stability.verdict`, and run the audio beat tracker for a second opinion:
+
+  ```bash
+  .venv/bin/python scripts/transcription_cleanup.py beats \
+    'output/<slug>/<slug>.wav' 'output/<slug>/beats.json' --bpm-hint <bpm>
+  ```
+
+  (Works on the mp3 too for pre-WAV pieces.) Always pass `--bpm-hint` when ground truth exists — it pins the metrical level; without it the tracker can lock onto a sub-pulse exactly like the autocorrelation does. **Grid choice**: if the beats report says "steady", use the fixed `--bpm` grid in step 4 (cleaner notation); if "some rubato"/"rubato", use `--beats` so barlines follow the performance. Heavy rubato still gets flagged prominently either way.
 - **Thresholds**: review the `artifact_candidates`/`ghost_candidates` samples. Be conservative: when a candidate might be a real grace note or ornament, keep it (raise `--vel-ratio` down / `--min-dur` down) and flag it instead.
 
 ## 3. Clean the MIDI
@@ -45,9 +52,13 @@ Interpret the JSON with musical judgment:
 **Never feed a `.mid` to MuseScore** — its import quantization auto-detects its own tempo (ignoring the tempo and time-signature meta events) and can lock onto a sub-pulse, wronging every barline and spraying fake tuplets. Use the script's `quantize` instead; mscore is only used for the final `.musicxml` → `.mscz` format conversion.
 
 ```bash
+# Steady piece: fixed grid. Rubato piece: swap --bpm 78 for
+#   --beats 'output/<slug>/beats.json' --beats-shift <trim_shift_s from clean_report>
+# and pass the same --beats/--beats-shift to post (plus --offset-shift if the
+# quantize summary asked for it).
 .venv/bin/python scripts/transcription_cleanup.py quantize \
   'output/<slug>/<slug>.cleaned.mid' 'output/<slug>/<slug>.tmp.musicxml' \
-  --bpm 78 --key 'D major'
+  --bpm 78 --key 'D major' --time-sig '3/4'
 .venv/bin/python scripts/transcription_cleanup.py post \
   'output/<slug>/<slug>.tmp.musicxml' 'output/<slug>/<slug>.cleaned.musicxml' \
   --key 'D major' --time-sig '3/4' \
@@ -58,7 +69,9 @@ MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 rm 'output/<slug>/<slug>.tmp.musicxml'
 ```
 
-`quantize` snaps onsets to a fixed grid at the chosen BPM (default 32nd notes; `--grid` to change), merges same-slot notes into chords, caps durations at the next onset in the same staff (pedal marks carry the sustain), and splits hands at the analyzer-suggested pitch (`--split` to override). Check its summary: `score_seconds_at_bpm` must be within a few percent of `audio_seconds`, and `post`'s `tempo_marked_bpm` should land on (or very near) your chosen BPM — a mismatch means the BPM was wrong; go back to step 2.
+`quantize` snaps onsets to the grid (default 32nd notes; `--grid` to change), merges same-slot notes into chords, caps durations at the next onset in the same staff (pedal marks carry the sustain), and splits hands at the analyzer-suggested pitch (`--split` to override). With `--beats` the grid is the tracked beat sequence (refined to MIDI onsets), so rubato and drift don't corrupt barlines, and persistent tempo deviations get `rit.`/`accel.`/`a tempo` text. Pass `--time-sig` so it can infer the **downbeat phase** from bass/harmony/agogic cues — if the piece starts mid-bar it opens bar 1 with rests and reports a pickup flag (always relay this to "verify by ear").
+
+Check the summaries: fixed-grid `score_seconds_at_bpm` must be within a few percent of `audio_seconds`, and `post`'s `tempo_marked_bpm` should land near the chosen/tracked BPM — a mismatch means the BPM was wrong; go back to step 2. If quantize reports `offset_shift_beats`, pass that value to `post --offset-shift`.
 
 `post` does the canned notation fixes: enharmonic respelling toward the key, merging fragmented tied chains, moving clearly out-of-range notes to the correct staff, pedal markings from CC64, and **dynamics from MIDI velocities** — level marks (pp–ff) at changes plus cresc./dim. hairpins where the velocity profile trends steadily. Check `dynamics_preview` in the analyze report first; if the proposed levels look like noise (e.g. constant-velocity synthesized audio), drop `--dynamics-from`.
 

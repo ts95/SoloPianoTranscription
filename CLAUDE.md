@@ -10,8 +10,8 @@ Pipeline for transcribing solo piano performances from YouTube into editable she
   - `.venv/bin/transkun`
 - MuseScore CLI path (constant): `/Applications/MuseScore 4.app/Contents/MacOS/mscore`
 - ffmpeg is at `/opt/homebrew/bin/ffmpeg` (needed by yt-dlp).
-- If `.venv` doesn't exist: `python3.11 -m venv .venv && .venv/bin/pip install transkun yt-dlp music21` (pulls PyTorch, ~2 GB).
-- `scripts/transcription_cleanup.py` (run with `.venv/bin/python`) provides `analyze` / `clean` / `quantize` / `post` subcommands used by the pipeline and `cleanup-score` skills.
+- If `.venv` doesn't exist: `python3.11 -m venv .venv && .venv/bin/pip install transkun yt-dlp music21 'llvmlite==0.42.0' 'numba==0.59.1' librosa` (pulls PyTorch, ~2 GB; llvmlite/numba are pinned because newer releases ship no x86_64 macOS wheels).
+- `scripts/transcription_cleanup.py` (run with `.venv/bin/python`) provides `analyze` / `clean` / `beats` / `quantize` / `post` subcommands used by the pipeline and `cleanup-score` skills.
 - `scripts/prepare_audio.sh <in> <out.wav>` — two-pass linear loudness normalization + 44.1 kHz resample; run on all audio before Transkun.
 
 ## Output layout
@@ -26,6 +26,7 @@ output/<slug>/
 ├── <slug>.musicxml   # quantized score (interchange format)
 ├── <slug>.mscz       # native MuseScore 4 file (for direct editing)
 ├── <slug>.cleaned.*  # cleanup-score products (mid/musicxml/mscz) — originals stay untouched
+├── beats.json        # audio beat-tracking (librosa) — drives rubato-aware quantization
 ├── clean_report.json # machine summary of the MIDI clean pass
 └── CLEANUP_NOTES.md  # what was changed + what to verify by ear
 ```
@@ -91,5 +92,6 @@ After producing any score, inspect it for statistical outliers — transcription
 - Quote all paths: video-title slugs can still contain characters that need quoting, and the mscore path contains a space.
 - **Never import a `.mid` into MuseScore** (CLI or GUI) — its quantization auto-detects its own tempo, ignores the tempo and time-signature meta events, and can lock onto a sub-pulse (e.g. the dotted-eighth of a 3-3-2 groove → 4/3 of the true BPM), wronging every barline and spraying fake tuplets. All MIDI → MusicXML goes through `transcription_cleanup.py quantize --bpm <bpm>`; mscore is only for `.musicxml` → `.mscz`/PDF format conversion.
 - The quantize grid stands or falls with the BPM. Prefer the user / web ground truth over statistical candidates, and check the quantize summary: `score_seconds_at_bpm` must be within a few percent of `audio_seconds`.
+- Grid choice: steady performance → fixed `--bpm` grid (cleaner notation); rubato → `beats` subcommand + `quantize --beats` (barlines follow the performance). Always seed `beats --bpm-hint` with ground truth — audio beat trackers lock onto sub-pulses just like autocorrelation (this is also why `quantize` infers the downbeat phase and may open bar 1 with pickup rests).
 - music21 `makeMeasures()` does not split notes at barlines — always follow with `makeTies()`, or MuseScore rejects the overfull measures (exit 40).
 - zsh does not word-split unquoted variables; don't stash multi-word commands in shell variables.

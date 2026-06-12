@@ -4,9 +4,11 @@
 Subcommands:
   analyze  <in.mid>                       print a JSON report (read-only)
   clean    <in.mid> <out.mid> [opts]      MIDI-level pre-clean (artifacts, trim, meta)
-  quantize <in.mid> <out.musicxml> --bpm  MIDI -> MusicXML on a fixed grid (replaces
-                                          MuseScore's MIDI import, which auto-detects
-                                          its own tempo and must never be used)
+  beats    <in.wav> <out.json>            beat-track the recording with librosa
+  quantize <in.mid> <out.musicxml>        MIDI -> MusicXML on a fixed --bpm grid or a
+                                          beat-tracked --beats warp (replaces MuseScore's
+                                          MIDI import, which auto-detects its own tempo
+                                          and must never be used)
   post     <in.musicxml> <out.musicxml>   music21 notation-level fixes
 
 All decisions that require judgment (key, meter, thresholds) are passed in as
@@ -364,34 +366,155 @@ def cmd_clean(args):
 EXPRESSIBLE_QL = [6, 4, 3, 2, 1.5, 1, 0.75, 0.5, 0.375, 0.25, 0.1875, 0.125, 0.0625]
 
 
-def cmd_quantize(args):
-    """MIDI -> MusicXML quantized on a fixed BPM grid with music21.
+def load_beat_times(path, shift=0.0):
+    """Beat times (seconds) from a `beats` subcommand JSON, shifted into the
+    timeline of a trimmed MIDI (pass the clean pass's trim_shift_s)."""
+    with open(path) as f:
+        data = json.load(f)
+    return [b - shift for b in data["beats"]]
 
-    MuseScore 4's MIDI import auto-detects its own tempo (it ignores the tempo
-    meta event) and can lock onto a sub-pulse — e.g. the dotted-eighth of a
-    3-3-2 groove, 4/3 of the true BPM — which wrongs every barline and sprays
-    fake tuplets. This quantizer trusts the caller's BPM instead: onsets snap
-    to a fixed grid, same-slot notes merge into chords, and durations are
-    capped at the next onset in the same staff (pedal marks carry sustain).
+
+def beat_warp(beats):
+    """Piecewise-linear map seconds -> beat position (1 beat = 1 quarterLength).
+    Extrapolates beyond the tracked range at the median beat period."""
+    import bisect
+    if not beats or len(beats) < 2:
+        return None
+    med = statistics.median(b - a for a, b in zip(beats, beats[1:]))
+
+    def f(t):
+        if t <= beats[0]:
+            return (t - beats[0]) / med
+        if t >= beats[-1]:
+            return len(beats) - 1 + (t - beats[-1]) / med
+        i = bisect.bisect_right(beats, t) - 1
+        return i + (t - beats[i]) / (beats[i + 1] - beats[i])
+
+    return f
+
+
+def refine_beats(beats, notes, window=0.05):
+    """Snap tracked beat times to the nearest MIDI onset within `window` s.
+    Audio beat tracking has frame-level jitter (~23 ms); the MIDI onsets are
+    precise, and the pianist's onsets ARE the beat where they coincide."""
+    import bisect
+    onsets = sorted({round(n.start, 4) for n in notes})
+    refined = []
+    for b in beats:
+        i = bisect.bisect_left(onsets, b)
+        best, bd = b, window
+        for j in (i - 1, i):
+            if 0 <= j < len(onsets) and abs(onsets[j] - b) < bd:
+                best, bd = onsets[j], abs(onsets[j] - b)
+        refined.append(best)
+    out = [refined[0]]
+    for r in refined[1:]:  # keep strictly increasing
+        out.append(max(r, out[-1] + 1e-3))
+    return out
+
+
+def infer_bar_phase(events, beats_per_bar):
+    """Which beat is the downbeat? Score each candidate phase with the classic
+    meter-induction cues (Lerdahl & Jackendoff): bass-register onsets on strong
+    beats, harmonic-rhythm (pitch-class set) changes on downbeats, and agogic
+    accents (longer notes on strong beats). events = [(beat_pos, pitch,
+    velocity, dur_beats)]. Returns (phase, confidence 0..1, cue breakdown)."""
+    B = beats_per_bar
+    if B < 2 or not events:
+        return 0, 0.0, {}
+    n_beats = int(max(e[0] for e in events)) + 1
+    pcs_per_beat = [set() for _ in range(n_beats + 1)]
+    bass_w = [0.0] * B
+    agogic = [0.0] * B
+    for pos, pitch, vel, dur in events:
+        k = int(round(pos))
+        if abs(pos - k) > 0.15 or k >= n_beats:
+            continue  # only on-beat onsets vote
+        pcs_per_beat[k].add(pitch % 12)
+        if pitch < 55:  # below ~G3: bass register
+            bass_w[k % B] += vel / 127.0
+        agogic[k % B] += min(dur, float(B))
+    harm = [0.0] * B
+    for k in range(1, n_beats):
+        a, b = pcs_per_beat[k - 1], pcs_per_beat[k]
+        if not a or not b:
+            continue
+        change = 1.0 - len(a & b) / len(a | b)
+        harm[k % B] += change
+
+    def z(xs):
+        m = sum(xs) / len(xs)
+        sd = (sum((x - m) ** 2 for x in xs) / len(xs)) ** 0.5
+        return [0.0] * len(xs) if sd == 0 else [(x - m) / sd for x in xs]
+
+    totals = [a + b + c for a, b, c in zip(z(bass_w), z(harm), z(agogic))]
+    ranked = sorted(range(B), key=lambda p: -totals[p])
+    best, second = ranked[0], ranked[1]
+    spread = max(totals) - min(totals)
+    conf = (totals[best] - totals[second]) / spread if spread > 0 else 0.0
+    breakdown = {"bass": [round(x, 2) for x in bass_w],
+                 "harmonic_change": [round(x, 2) for x in harm],
+                 "agogic": [round(x, 2) for x in agogic]}
+    return best, round(conf, 2), breakdown
+
+
+def cmd_quantize(args):
+    """MIDI -> MusicXML quantized with music21 — never MuseScore's MIDI import
+    (it auto-detects its own tempo, ignores the meta events, and can lock onto
+    a sub-pulse, e.g. 4/3 of the true BPM on a 3-3-2 groove).
+
+    Two grids: a fixed BPM grid (--bpm), or a beat-tracked warp (--beats, from
+    the `beats` subcommand) where the grid follows the performance through
+    rubato and drift. Onsets snap to the grid, same-slot notes merge into
+    chords, durations are capped at the next onset in the same staff (pedal
+    marks carry sustain). Downbeat phase is inferred from bass/harmony/agogic
+    cues so bar 1 beat 1 lands on a real downbeat (leading rests model a pickup).
     """
     from fractions import Fraction
-    from music21 import (chord as m21chord, duration as m21dur, key as m21key,
-                         meter as m21meter, note as m21note, stream as m21stream)
+    from music21 import (chord as m21chord, duration as m21dur, expressions as m21expr,
+                         key as m21key, meter as m21meter, note as m21note,
+                         stream as m21stream)
 
     pm = pretty_midi.PrettyMIDI(args.input)
     notes = all_notes(pm)
     if not notes:
         print(json.dumps({"error": "no notes found"}))
         return 1
+    if not args.bpm and not args.beats:
+        print(json.dumps({"error": "need --bpm or --beats"}))
+        return 1
 
-    bpm = Fraction(str(args.bpm))
     grid = Fraction(4, args.grid)  # e.g. --grid 32 -> 1/8 quarterLength
     expressible = sorted((Fraction(str(x)) for x in EXPRESSIBLE_QL), reverse=True)
     split_name = (hand_split(notes)["suggested_split"] if args.split == "auto"
                   else args.split)
     split = pretty_midi.note_name_to_number(split_name)
 
+    summary = {"input": args.input, "output": args.output,
+               "grid": f"1/{args.grid}", "hand_split": split_name, "staves": {}}
+
+    warp, beat_times, warp_base = None, None, 0
+    if args.beats:
+        beat_times = refine_beats(load_beat_times(args.beats, args.beats_shift), notes)
+        warp = beat_warp(beat_times)
+        periods = [b - a for a, b in zip(beat_times, beat_times[1:])]
+        med_period = statistics.median(periods)
+        # Rebase so the first note lands in bar 1: the tracker's grid starts
+        # wherever the audio starts, which may be many beats before the
+        # (trimmed) MIDI's t=0.
+        import math
+        warp_base = math.floor(warp(notes[0].start))
+        summary["mode"] = "beat-tracked"
+        summary["tempo_median_bpm"] = round(60 / med_period, 1)
+        bpm = Fraction(str(round(60 / med_period, 3)))
+    else:
+        bpm = Fraction(str(args.bpm))
+        summary["mode"] = "fixed-grid"
+        summary["bpm"] = float(bpm)
+
     def to_ql(t):
+        if warp:
+            return Fraction(warp(t) - warp_base).limit_denominator(100000)
         return Fraction(t).limit_denominator(100000) * bpm / 60
 
     def snap(ql):
@@ -403,9 +526,27 @@ def cmd_quantize(args):
                 return c
         return grid
 
+    # Downbeat phase from meter-induction cues; bar 1 beat 1 should be a downbeat.
+    ts_parts = (args.time_sig or "4/4").split("/")
+    beats_per_bar = int(ts_parts[0]) * 4 // int(ts_parts[1]) \
+        if (int(ts_parts[0]) * 4) % int(ts_parts[1]) == 0 else 0
+    pad = Fraction(0)
+    if beats_per_bar >= 2:
+        events = [(float(to_ql(n.start)), n.pitch, n.velocity,
+                   float(to_ql(n.end) - to_ql(n.start))) for n in notes]
+        phase, conf, cues = infer_bar_phase(events, beats_per_bar)
+        summary["bar_phase"] = {"downbeat_at_beat": phase, "confidence": conf,
+                                "cues": cues}
+        if phase != 0 and conf >= 0.2:
+            pad = Fraction(beats_per_bar - phase)
+            summary["bar_phase"]["pickup"] = (
+                f"first {phase} beat(s) are a pickup — bar 1 opens with "
+                f"{beats_per_bar - phase} beat(s) of rest; verify by ear")
+        elif phase != 0:
+            summary["bar_phase"]["pickup"] = (
+                "weak downbeat evidence — kept first onset on beat 1; verify by ear")
+
     score = m21stream.Score()
-    summary = {"input": args.input, "output": args.output, "bpm": float(bpm),
-               "grid": f"1/{args.grid}", "hand_split": split_name, "staves": {}}
     for name, hand in (("treble", [n for n in notes if n.pitch >= split]),
                        ("bass", [n for n in notes if n.pitch < split])):
         slots = {}
@@ -429,18 +570,102 @@ def cmd_quantize(args):
             el = (m21note.Note(pitches[0]) if len(pitches) == 1
                   else m21chord.Chord(pitches))
             el.duration = m21dur.Duration(dur_down(max(min(raw_dur, cap), grid)))
-            ps.insert(off, el)
+            ps.insert(off + pad, el)
         score.insert(0, ps)
         summary["staves"][name] = {"events": len(onsets), "durations_capped_at_next_onset": capped}
 
+    # Tempo-trend text where the tracked tempo deviates persistently (>=4 beats,
+    # >7%) from the median: rit. / accel., and a tempo on recovery.
+    if warp and beat_times:
+        treble_ps = score.parts[0]
+        med = statistics.median(periods)
+        marks, state = [], None
+        for k in range(len(periods) - 3):
+            beat_off = k - warp_base + int(pad)
+            if beat_off < 0:
+                continue  # before the score starts
+            window = statistics.mean(periods[k:k + 4])
+            trend = ("rit." if window > med * 1.07
+                     else "accel." if window < med * 0.93 else None)
+            if trend != state and (trend or state):
+                label = trend if trend else "a tempo"
+                marks.append((beat_off, label))
+                state = trend
+        if 0 < len(marks) <= 12:
+            for beat_k, label in marks:
+                te = m21expr.TextExpression(label)
+                te.style.fontStyle = "italic"
+                treble_ps.insert(beat_k, te)
+            summary["tempo_marks"] = [{"beat": b, "mark": m} for b, m in marks]
+        elif len(marks) > 12:
+            summary["tempo_marks"] = (f"{len(marks)} tempo swings detected — too many "
+                                      "to mark; treat the piece as rubato throughout")
+
     score.write("musicxml", fp=args.output)
-    # Sanity check the BPM: written length should match the audio length.
     end_t = pm.get_end_time()
     summary["audio_seconds"] = round(end_t, 1)
-    summary["score_seconds_at_bpm"] = round(float(score.highestTime) * 60 / float(bpm), 1)
-    summary["note"] = ("score_seconds_at_bpm should be within a few percent of "
-                       "audio_seconds; a big mismatch means the BPM is wrong")
+    if warp:
+        last_beat = warp(notes[-1].end)
+        summary["beats_tracked"] = len(beat_times)
+        summary["beats_spanned_by_notes"] = round(last_beat, 1)
+    else:
+        summary["score_seconds_at_bpm"] = round(
+            float(score.highestTime - pad) * 60 / float(bpm), 1)
+        summary["note"] = ("score_seconds_at_bpm should be within a few percent of "
+                           "audio_seconds; a big mismatch means the BPM is wrong")
+    if pad:
+        summary["offset_shift_beats"] = int(pad)
+        summary["note_post"] = ("pass --offset-shift "
+                                f"{int(pad)} to `post` so pedal/dynamics map correctly")
     print(json.dumps(summary, indent=2))
+    return 0
+
+
+def cmd_beats(args):
+    """Beat-track the recording (audio, not MIDI) with librosa; write beats.json."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        import librosa
+        y, sr = librosa.load(args.input, sr=22050, mono=True)
+        oenv = librosa.onset.onset_strength(y=y, sr=sr)
+        kwargs = {}
+        if args.bpm_hint:
+            # Pin the tempo: a soft start_bpm prior still lets the tracker lock
+            # onto a sub-pulse (e.g. the dotted-eighth of a 3-3-2 groove at 4/3
+            # of the true BPM). The DP still places each beat locally, so
+            # drift/rubato is tracked — only the metrical level is forced.
+            kwargs["bpm"] = args.bpm_hint
+        else:
+            kwargs["start_bpm"] = 120.0
+        tempo, beats = librosa.beat.beat_track(
+            onset_envelope=oenv, sr=sr, units="time", trim=False,
+            tightness=args.tightness, **kwargs)
+    beats = [round(float(b), 4) for b in beats]
+    periods = [b - a for a, b in zip(beats, beats[1:])]
+    cv = (statistics.stdev(periods) / statistics.mean(periods)) if len(periods) > 2 else None
+    report = {
+        "audio": args.input,
+        "bpm_hint": args.bpm_hint,
+        "tempo_global_bpm": round(float(np.atleast_1d(tempo)[0]), 1),
+        "tempo_median_bpm": round(60 / statistics.median(periods), 1) if periods else None,
+        "n_beats": len(beats),
+        "beat_period_cv": round(cv, 3) if cv is not None else None,
+        "stability": ("steady" if cv is not None and cv < 0.05
+                      else "some rubato" if cv is not None and cv < 0.15
+                      else "rubato"),
+        "beats": beats,
+    }
+    if args.bpm_hint and periods:
+        ratio = (60 / statistics.median(periods)) / args.bpm_hint
+        if abs(ratio - 1) > 0.08:
+            report["warning"] = (f"tracked tempo is {ratio:.2f}x the hint — the tracker "
+                                 "may be on a sub-pulse (check 4/3, 3/2, 2x) or the hint "
+                                 "is wrong for this performance")
+    with open(args.output, "w") as f:
+        json.dump(report, f, indent=2)
+    print(json.dumps({k: v for k, v in report.items() if k != "beats"}, indent=2))
+    print(f"wrote {args.output}")
     return 0
 
 
@@ -613,18 +838,37 @@ def cmd_post(args):
                         p.step, p.accidental, p.octave = enh.step, enh.accidental, enh.octave
                         changes["respelled_directional"] += 1
 
-    # Seconds -> quarterLength scale. MuseScore's MIDI import picks its own
-    # quantization grid (it ignores tempo meta just like time signatures), so
-    # derive the true scale from the score itself rather than any tempo number.
-    qps = None
+    # Seconds -> quarterLength mapping. With --beats, the beat warp follows the
+    # performance through rubato; otherwise a single linear scale derived from
+    # the score's own length (the quantize grid), never a trusted tempo number.
+    qps, warp, mark_bpm, warp_base = None, None, None, 0
+    shift_q = float(args.offset_shift)
     if args.dynamics_from:
         pm_timing = pretty_midi.PrettyMIDI(args.dynamics_from)
+    if args.beats:
+        bt = load_beat_times(args.beats, args.beats_shift)
+        if args.dynamics_from:
+            # Same onset refinement as quantize, so the two maps agree exactly.
+            bt = refine_beats(bt, all_notes(pm_timing))
+        warp = beat_warp(bt)
+        if warp:
+            import math
+            first = all_notes(pm_timing) if args.dynamics_from else None
+            warp_base = math.floor(warp(first[0].start if first else 0.0))
+            mark_bpm = round(60 / statistics.median(
+                b - a for a, b in zip(bt, bt[1:])))
+    if args.dynamics_from:
         end_t = pm_timing.get_end_time()
         if end_t > 0 and score.highestTime > 0:
-            qps = float(score.highestTime) / end_t
+            qps = (float(score.highestTime) - shift_q) / end_t
+            if mark_bpm is None:
+                mark_bpm = round(qps * 60)
+
+    def to_q(t):
+        return ((warp(t) - warp_base) if warp else t * qps) + shift_q
 
     # Set a metronome mark matching the grid, so playback matches the recording.
-    if qps:
+    if mark_bpm:
         from music21 import tempo as m21tempo
         for mm in list(score.recurse().getElementsByClass(m21tempo.MetronomeMark)):
             if mm.activeSite is not None:
@@ -632,8 +876,8 @@ def cmd_post(args):
         target = parts[0] if parts else score
         first_m = target.getElementsByClass("Measure").first()
         (first_m if first_m is not None else target).insert(
-            0, m21tempo.MetronomeMark(number=round(qps * 60)))
-        changes["tempo_marked_bpm"] = round(qps * 60)
+            0, m21tempo.MetronomeMark(number=mark_bpm))
+        changes["tempo_marked_bpm"] = mark_bpm
 
     # Pedal markings from CC64 regions captured by the clean pass.
     if args.pedal_from:
@@ -641,17 +885,17 @@ def cmd_post(args):
             clean_report = json.load(f)
         regions = clean_report.get("pedal_regions", [])
         tempo = clean_report.get("tempo_bpm")
-        if qps is None and tempo:
+        if qps is None and warp is None and tempo:
             qps = tempo / 60.0  # fallback when --dynamics-from wasn't given
         if not hasattr(expressions, "PedalMark"):
             changes["pedal_note"] = (f"{len(regions)} pedal regions in report, but this music21 "
                                      "lacks PedalMark — add pedal manually in MuseScore")
-        elif not qps:
+        elif not (qps or warp):
             changes["pedal_note"] = "no timing scale available; cannot map pedal times to offsets"
         else:
             flat_notes = sorted(score.recurse().notes, key=lambda n: n.getOffsetInHierarchy(score))
             for r in regions:
-                start_q, end_q = r["down"] * qps, r["up"] * qps
+                start_q, end_q = to_q(r["down"]), to_q(r["up"])
                 inside = [n for n in flat_notes
                           if start_q - 0.5 <= n.getOffsetInHierarchy(score) <= end_q]
                 if len(inside) >= 1:
@@ -662,7 +906,7 @@ def cmd_post(args):
 
     # Dynamics from MIDI velocities: level marks at changes, hairpins on trends.
     if args.dynamics_from:
-        if not qps:
+        if not (qps or warp):
             changes["dynamics_note"] = "no timing scale available; cannot map times to offsets"
         else:
             profile = velocity_profile(pm_timing)
@@ -672,7 +916,7 @@ def cmd_post(args):
                               key=lambda n: n.getOffsetInHierarchy(score))
 
             def note_at(t_seconds):
-                q = t_seconds * qps
+                q = to_q(t_seconds)
                 for n in anchored:
                     if n.getOffsetInHierarchy(score) >= q - 0.25:
                         return n
@@ -707,7 +951,7 @@ def cmd_post(args):
 
     # Windowed key check: a persistent local key whose signature differs from the
     # global one marks a modulation — respell that region locally and flag it.
-    if args.key and args.dynamics_from and qps:
+    if args.key and args.dynamics_from and (qps or warp):
         WIN = 15.0
         global_sharps = m21_key(args.key).sharps
         m_notes = all_notes(pm_timing)
@@ -729,7 +973,7 @@ def cmd_post(args):
                 j += 1
             if j > i:  # 2+ consecutive windows agree on the foreign key
                 lo_s, hi_s = wins[i][0], wins[j][0] + WIN
-                changes["respelled"] += respell_toward(kname, lo=lo_s * qps, hi=hi_s * qps)
+                changes["respelled"] += respell_toward(kname, lo=to_q(lo_s), hi=to_q(hi_s))
                 flags.append({"approx_start_s": round(lo_s, 1),
                               "approx_end_s": round(hi_s, 1), "local_key": kname})
             i = j + 1
@@ -766,20 +1010,35 @@ def main():
     c.add_argument("--report", help="also write the JSON summary to this file")
     c.set_defaults(fn=cmd_clean)
 
-    q = sub.add_parser("quantize", help="MIDI -> MusicXML on a fixed BPM grid "
-                                        "(never use MuseScore's MIDI import instead)")
+    b = sub.add_parser("beats", help="beat-track the recording (audio) with librosa")
+    b.add_argument("input", help="audio file (the prepared .wav)")
+    b.add_argument("output", help="beats.json path")
+    b.add_argument("--bpm-hint", type=float,
+                   help="ground-truth/expected BPM to seed the tracker")
+    b.add_argument("--tightness", type=float, default=100.0,
+                   help="how strongly the tracker resists tempo change (default 100; "
+                        "lower for heavy rubato)")
+    b.set_defaults(fn=cmd_beats)
+
+    q = sub.add_parser("quantize", help="MIDI -> MusicXML on a fixed BPM grid or "
+                                        "beat-tracked warp (never MuseScore's MIDI import)")
     q.add_argument("input")
     q.add_argument("output")
-    q.add_argument("--bpm", type=float, required=True,
-                   help="performance tempo from ground truth/user/analyze — the whole "
-                        "grid depends on it; check the sanity fields in the summary")
+    q.add_argument("--bpm", type=float,
+                   help="fixed-grid tempo from ground truth/user/analyze — check the "
+                        "sanity fields in the summary (alternative to --beats)")
+    q.add_argument("--beats", help="beats.json from the `beats` subcommand — the grid "
+                                   "follows the performance (preferred when available)")
+    q.add_argument("--beats-shift", type=float, default=0.0,
+                   help="seconds to subtract from beat times (the clean pass's "
+                        "trim_shift_s) when quantizing a trimmed .mid")
     q.add_argument("--grid", type=int, default=32,
                    help="onset grid as a note-value denominator (default 32 = 32nd notes)")
     q.add_argument("--split", default="auto",
                    help='hand-split pitch, e.g. "E3"; default: auto from pitch-gap analysis')
     q.add_argument("--key", help='e.g. "D major" — inserts the key signature')
-    q.add_argument("--time-sig", help='e.g. "3/4" — inserts the time signature '
-                                      '(post re-bars anyway when given --time-sig)')
+    q.add_argument("--time-sig", help='e.g. "3/4" — inserts the time signature and '
+                                      'sets the bar length for downbeat inference')
     q.set_defaults(fn=cmd_quantize)
 
     p = sub.add_parser("post", help="music21 notation fixes on quantized MusicXML")
@@ -789,6 +1048,13 @@ def main():
     p.add_argument("--time-sig", help='e.g. "3/4" — re-bar at this meter')
     p.add_argument("--pedal-from", help="clean-pass JSON report containing pedal_regions")
     p.add_argument("--dynamics-from", help="cleaned .mid — derive dynamics/hairpins from velocities")
+    p.add_argument("--beats", help="beats.json — map seconds to offsets through the beat "
+                                   "warp (must match what quantize used)")
+    p.add_argument("--beats-shift", type=float, default=0.0,
+                   help="same shift passed to quantize --beats-shift")
+    p.add_argument("--offset-shift", type=float, default=0.0,
+                   help="quantize's offset_shift_beats (pickup padding), so "
+                        "pedal/dynamics land on the shifted offsets")
     p.add_argument("--no-rehand", action="store_true")
     p.set_defaults(fn=cmd_post)
 
