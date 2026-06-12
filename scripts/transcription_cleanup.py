@@ -865,8 +865,15 @@ def cmd_quantize(args):
         for d, comp in DIV_COMPLEXITY.items():
             if d > max_div:
                 continue
-            err = sum(min(abs(f - k / d) for k in range(d + 1)) for f in fs) / len(fs)
-            score = err + comp - (0.04 if d == bonus_d else 0.0)
+            errs = [min(abs(f - k / d) for k in range(d + 1)) for f in fs]
+            err = sum(errs) / len(fs)
+            # An onset stranded more than 1/8 beat from every slot is not
+            # jitter — the division fails to explain it. Mean error alone
+            # dilutes one genuine 16th among on-slot onsets, so the beat
+            # keeps division 2 and the 16th collapses into its neighbor's
+            # chord (vanished onsets, block chords where the ear hears two).
+            unexplained = 0.25 if max(errs) > 0.125 else 0.0
+            score = err + comp + unexplained - (0.04 if d == bonus_d else 0.0)
             if best_score is None or score < best_score:
                 best_score, best = score, d
         return best
@@ -991,7 +998,7 @@ def cmd_quantize(args):
                 te = m21expr.TextExpression(label)
                 te.style.fontStyle = "italic"
                 marks.append((beat_k, te))
-        items, capped, sustained, filled = [], 0, 0, 0
+        items, capped, sustained, filled, arpeggiated = [], 0, 0, 0, 0
         for i, off in enumerate(onsets):
             group = slots[off]
             raw_dur = max(to_ql(n.end) - off for n in group)
@@ -1035,12 +1042,21 @@ def cmd_quantize(args):
             el = (m21note.Note(pitches[0]) if len(pitches) == 1
                   else m21chord.Chord(pitches))
             el.duration = m21dur.Duration(dur_down(max(dur, grid), ternary))
+            # A "chord" whose source onsets are spread in time is a rolled
+            # chord — engrave the roll (arpeggiate squiggle), don't silently
+            # flatten it into a block chord.
+            if len(pitches) > 1:
+                spread = max(n.start for n in group) - min(n.start for n in group)
+                if spread > 0.04:
+                    el.expressions.append(m21expr.ArpeggioMark())
+                    arpeggiated += 1
             items.append((off + pad, el))
         score.insert(0, build_measured_part(items, marks, ts_str, f"P1-{name}"))
         summary["staves"][name] = {"events": len(onsets),
                                    "durations_capped_at_next_onset": capped,
                                    "legato_filled_to_next_onset": filled,
-                                   "sustained_as_second_voice": sustained}
+                                   "sustained_as_second_voice": sustained,
+                                   "rolled_chords_arpeggiated": arpeggiated}
 
     normalize_accidentals(score)
 
