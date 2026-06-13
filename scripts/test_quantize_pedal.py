@@ -122,6 +122,63 @@ def test_pedal_smear_not_engraved():
     print("ok: no pedal-smear sustains, no drone fills")
 
 
+def make_pedal_fill_midi(path):
+    """Under a held sustain pedal, a note released early before a *moderate*
+    gap to the next onset must fill the gap (a longer note), not become
+    note+rest — a rest under pedal is acoustically impossible (the strings
+    ring). Bass stabs every 1.5 beats (> the 1.25-beat legato threshold),
+    released after 0.4 beat, pedal down throughout. Distinct from the drone
+    case: the gap is moderate (1.5 beat), not a multi-beat sparse silence."""
+    pm = pretty_midi.PrettyMIDI(initial_tempo=120)  # beat = 0.5 s
+    inst = pretty_midi.Instrument(program=0)
+    # Treble: a clear sustained melody note per bar so the treble staff exists.
+    for b in range(4):
+        inst.notes.append(pretty_midi.Note(velocity=80, pitch=72,
+                                           start=b * 2.0, end=b * 2.0 + 1.8))
+    # Bass: stabs 0.75 s (1.5 beats) apart, key released after 0.2 s (0.4 beat).
+    t = 0.0
+    while t < 7.0:
+        inst.notes.append(pretty_midi.Note(velocity=85, pitch=40,
+                                           start=t, end=t + 0.2))
+        t += 0.75
+    inst.control_changes.append(pretty_midi.ControlChange(64, 100, 0.0))
+    inst.control_changes.append(pretty_midi.ControlChange(64, 0, t + 0.5))
+    pm.instruments.append(inst)
+    pm.write(path)
+
+
+def test_pedal_fills_short_gaps_no_rest():
+    with tempfile.TemporaryDirectory() as d:
+        mid = os.path.join(d, "t.mid")
+        out = os.path.join(d, "t.musicxml")
+        make_pedal_fill_midi(mid)
+        r = subprocess.run([PY, SCRIPT, "quantize", mid, out, "--bpm", "120",
+                            "--time-sig", "4/4", "--split", "C4", "--bar-phase", "0"],
+                           capture_output=True, text=True, check=True)
+        summary = json.loads(r.stdout)
+
+        from music21 import converter
+        score = converter.parse(out)
+        bass = score.parts[-1]
+        notes = list(bass.recurse().notes)
+        rests = list(bass.recurse().getElementsByClass("Rest"))
+        assert notes, "no bass notes engraved"
+        maxql = max(float(n.duration.quarterLength) for n in notes)
+        assert maxql >= 1.25, (
+            f"bass notes not filled under pedal — max quarterLength {maxql} "
+            "(clipped to a beat + rest instead of a held note)")
+        last_note_off = max(n.getOffsetInHierarchy(score) for n in notes)
+        interior = [r for r in rests
+                    if r.getOffsetInHierarchy(score) < last_note_off]
+        assert not interior, (
+            f"{len(interior)} interior rest(s) under sustained pedal — "
+            "acoustically impossible; the note should fill the gap")
+        assert summary["staves"]["bass"].get("pedal_gap_filled", 0) > 0, (
+            "summary does not report any under-pedal gap fills")
+    print("ok: rests under sustained pedal filled into held notes")
+
+
 if __name__ == "__main__":
     test_pedal_smear_not_engraved()
     test_pedal_marks_from_mid()
+    test_pedal_fills_short_gaps_no_rest()

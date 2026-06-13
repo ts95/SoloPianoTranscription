@@ -1087,10 +1087,14 @@ def cmd_quantize(args):
                 te = m21expr.TextExpression(label)
                 te.style.fontStyle = "italic"
                 marks.append((beat_k, te))
-        items, capped, sustained, filled, arpeggiated = [], 0, 0, 0, 0
+        items, capped, sustained, filled, arpeggiated, pedal_filled = [], 0, 0, 0, 0, 0
         import math as _math
         LONG_GAP = Fraction(5, 4)  # same-staff silence longer than this is
         # musical space (the hand left), not a legato articulation gap
+        PEDAL_FILL_CAP = Fraction(2)  # under sustained pedal, fill gaps up to this
+        # (a half note) into a held note: a rest under pedal is acoustic nonsense
+        # (the strings ring). Must stay below the drone gap (>= 4 beats) so sparse
+        # multi-beat silences are NOT bridged.
         global_last_on = max(to_ql(n.start) for n in notes)
         for i, off in enumerate(onsets):
             group = slots[off]
@@ -1135,9 +1139,17 @@ def cmd_quantize(args):
                 ending = off + 2 >= global_last_on
                 if ending or cap <= LONG_GAP:
                     dur = cap
+                elif pedal_covered(off, off + cap) and cap <= PEDAL_FILL_CAP:
+                    # under sustained pedal a rest is acoustically impossible
+                    # (the strings ring): fill a moderate gap into a held note
+                    # instead of note + rest. The performed (decay-clipped)
+                    # length is unreliable here, so trust the pedal, not the
+                    # key release.
+                    dur = cap
+                    pedal_filled += 1
                 elif pedal_covered(off, off + max(dur, beat_cap)):
-                    # under pedal the performed length is smear — hold to the
-                    # beat boundary; pedal-up keeps the true finger hold
+                    # sparse multi-beat ring under pedal — hold only to the beat
+                    # boundary (drone guard); the pedal line conveys the rest
                     dur = beat_cap
             # Keep durations metrically consistent with their beat's division:
             # ternary-beat notes stay inside the beat (tuplet values only);
@@ -1167,6 +1179,7 @@ def cmd_quantize(args):
         summary["staves"][name] = {"events": len(onsets),
                                    "durations_capped_at_next_onset": capped,
                                    "legato_filled_to_next_onset": filled,
+                                   "pedal_gap_filled": pedal_filled,
                                    "sustained_as_second_voice": sustained,
                                    "rolled_chords_arpeggiated": arpeggiated}
 
