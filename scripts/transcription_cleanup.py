@@ -998,14 +998,18 @@ def cmd_quantize(args):
         if args.bar_phase is not None:
             phase, conf = args.bar_phase % beats_per_bar, 1.0
             summary["bar_phase"]["override"] = phase
-        if phase != 0 and conf >= 0.2:
+        # A wrong pickup is glaring (a near-empty leading bar), and pieces in this
+        # repertoire almost always start on the downbeat — so only insert a pickup
+        # on strong evidence. Marginal confidence keeps the first onset on beat 1.
+        if phase != 0 and conf >= 0.5:
             pad = Fraction(beats_per_bar - phase)
             summary["bar_phase"]["pickup"] = (
                 f"first {phase} beat(s) are a pickup — bar 1 opens with "
                 f"{beats_per_bar - phase} beat(s) of rest; verify by ear")
         elif phase != 0:
             summary["bar_phase"]["pickup"] = (
-                "weak downbeat evidence — kept first onset on beat 1; verify by ear")
+                f"downbeat evidence too weak (confidence {conf} < 0.5) — kept first "
+                "onset on beat 1; pass --bar-phase to force a pickup if needed")
 
     # Tempo structure: sustained plateaus become real metronome-mark changes
     # (a piece may have several tempi); short swings within a plateau become
@@ -1091,10 +1095,6 @@ def cmd_quantize(args):
         import math as _math
         LONG_GAP = Fraction(5, 4)  # same-staff silence longer than this is
         # musical space (the hand left), not a legato articulation gap
-        PEDAL_FILL_CAP = Fraction(2)  # under sustained pedal, fill gaps up to this
-        # (a half note) into a held note: a rest under pedal is acoustic nonsense
-        # (the strings ring). Must stay below the drone gap (>= 4 beats) so sparse
-        # multi-beat silences are NOT bridged.
         global_last_on = max(to_ql(n.start) for n in notes)
         for i, off in enumerate(onsets):
             group = slots[off]
@@ -1137,19 +1137,22 @@ def cmd_quantize(args):
                 # a staff-final note only keeps its ring near the piece's
                 # actual end — mid-piece it is pedal smear like any other
                 ending = off + 2 >= global_last_on
+                under_pedal = pedal_covered(off, off + cap)
                 if ending or cap <= LONG_GAP:
                     dur = cap
-                elif pedal_covered(off, off + cap) and cap <= PEDAL_FILL_CAP:
-                    # under sustained pedal a rest is acoustically impossible
-                    # (the strings ring): fill a moderate gap into a held note
-                    # instead of note + rest. The performed (decay-clipped)
-                    # length is unreliable here, so trust the pedal, not the
-                    # key release.
+                elif under_pedal and args.pedal_sustain == "bar" and cap <= beats_per_bar:
+                    # Under sustained pedal a rest is acoustically impossible (the
+                    # strings ring) and the performed length is decay-clipped, so
+                    # ring to the next onset for gaps up to one bar: a once-per-bar
+                    # bass note becomes a whole note instead of quarter + rests.
+                    # Gaps longer than a bar are sparse and are NOT bridged (that
+                    # would be the multi-bar drone the 'beat' mode also guards).
                     dur = cap
-                    pedal_filled += 1
-                elif pedal_covered(off, off + max(dur, beat_cap)):
-                    # sparse multi-beat ring under pedal — hold only to the beat
-                    # boundary (drone guard); the pedal line conveys the rest
+                    if dur > beat_cap:
+                        pedal_filled += 1
+                elif under_pedal:
+                    # 'beat' mode (groove pieces): hold only to the beat boundary
+                    # so the bass pulse stays visible; the pedal line conveys sustain
                     dur = beat_cap
             # Keep durations metrically consistent with their beat's division:
             # ternary-beat notes stay inside the beat (tuplet values only);
@@ -2046,6 +2049,11 @@ def main():
     q.add_argument("--force", action="store_true",
                    help="engrave even if the onset-grid fit is below the gate "
                         "(use only when you have confirmed the grid by ear)")
+    q.add_argument("--pedal-sustain", choices=["bar", "beat"], default="bar",
+                   help="how far a note rings under sustained pedal: 'bar' (default) "
+                        "fills to the next barline so a once-per-bar bass note becomes "
+                        "a whole note; 'beat' holds only to the next beat (groove "
+                        "pieces where the bass pulse must stay visible)")
     q.add_argument("--split", default="auto",
                    help='hand-split pitch, e.g. "E3"; default: auto from pitch-gap analysis')
     q.add_argument("--key", help='e.g. "D major" — inserts the key signature')

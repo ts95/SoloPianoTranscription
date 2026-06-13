@@ -51,7 +51,8 @@ def test_pedal_marks_from_mid():
         out = os.path.join(d, "t.pedal.musicxml")
         make_midi(mid)
         subprocess.run([PY, SCRIPT, "quantize", mid, xml, "--bpm", "120",
-                        "--time-sig", "4/4", "--bar-phase", "0"],
+                        "--time-sig", "4/4", "--bar-phase", "0",
+                        "--pedal-sustain", "beat"],
                        capture_output=True, text=True, check=True)
         r = subprocess.run([PY, SCRIPT, "post", xml, out, "--pedal-from", mid],
                            capture_output=True, text=True, check=True)
@@ -100,9 +101,11 @@ def test_pedal_smear_not_engraved():
         mid = os.path.join(d, "t.mid")
         xml = os.path.join(d, "t.musicxml")
         make_midi(mid)
+        # --pedal-sustain beat = the conservative, groove-preserving mode:
+        # a sparse stab is NOT filled into a held note (it keeps the pulse).
         out = subprocess.run(
             [PY, SCRIPT, "quantize", mid, xml, "--bpm", "120",
-             "--time-sig", "4/4", "--bar-phase", "0"],
+             "--time-sig", "4/4", "--bar-phase", "0", "--pedal-sustain", "beat"],
             capture_output=True, text=True, check=True)
         summary = json.loads(out.stdout)
 
@@ -119,7 +122,44 @@ def test_pedal_smear_not_engraved():
                     if n.duration.quarterLength > 1.0]
         assert not too_long, (
             f"bass stabs legato-filled across their silences (drones): {too_long}")
-    print("ok: no pedal-smear sustains, no drone fills")
+    print("ok: beat mode preserves the groove (no drone fills)")
+
+
+def test_pedal_bar_fill_makes_whole_note():
+    """Default 'bar' mode: a single bass note per 4/4 bar, released early under
+    sustain pedal, should ring as a WHOLE note (not quarter + rests) — and never
+    tie across the barline (<= one bar)."""
+    with tempfile.TemporaryDirectory() as d:
+        mid = os.path.join(d, "t.mid")
+        out = os.path.join(d, "t.musicxml")
+        pm = pretty_midi.PrettyMIDI(initial_tempo=120)  # bar = 2 s = 4 beats
+        inst = pretty_midi.Instrument(program=0)
+        for b in range(4):
+            inst.notes.append(pretty_midi.Note(velocity=80, pitch=72,
+                                               start=b * 2.0, end=b * 2.0 + 1.9))
+            # one bass note at each bar's downbeat, key released after 0.15 s
+            inst.notes.append(pretty_midi.Note(velocity=85, pitch=40,
+                                               start=b * 2.0, end=b * 2.0 + 0.15))
+        inst.control_changes.append(pretty_midi.ControlChange(64, 100, 0.0))
+        inst.control_changes.append(pretty_midi.ControlChange(64, 0, 8.5))
+        pm.instruments.append(inst)
+        pm.write(mid)
+        subprocess.run([PY, SCRIPT, "quantize", mid, out, "--bpm", "120",
+                        "--time-sig", "4/4", "--split", "C4", "--bar-phase", "0"],
+                       capture_output=True, text=True, check=True)
+        from music21 import converter
+        bass = converter.parse(out).parts[-1]
+        notes = list(bass.recurse().notes)
+        assert notes, "no bass notes"
+        assert max(float(n.duration.quarterLength) for n in notes) >= 4.0, (
+            "bass note under pedal not filled to a whole note")
+        assert max(float(n.duration.quarterLength) for n in notes) <= 4.0, (
+            "bass note tied across the barline (multi-bar drone)")
+        rests = [r for r in bass.recurse().getElementsByClass("Rest")]
+        last = max(n.getOffsetInHierarchy(bass) for n in notes)
+        interior = [r for r in rests if r.getOffsetInHierarchy(bass) < last]
+        assert not interior, f"{len(interior)} interior rest(s) under pedal"
+    print("ok: bar mode rings a once-per-bar bass note as a whole note")
 
 
 def make_pedal_fill_midi(path):
@@ -180,5 +220,6 @@ def test_pedal_fills_short_gaps_no_rest():
 
 if __name__ == "__main__":
     test_pedal_smear_not_engraved()
+    test_pedal_bar_fill_makes_whole_note()
     test_pedal_marks_from_mid()
     test_pedal_fills_short_gaps_no_rest()
