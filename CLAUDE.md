@@ -13,6 +13,8 @@ Pipeline for transcribing solo piano performances from YouTube into editable she
 - If `.venv` doesn't exist: `python3.11 -m venv .venv && .venv/bin/pip install transkun yt-dlp music21 'llvmlite==0.42.0' 'numba==0.59.1' librosa` (pulls PyTorch, ~2 GB; llvmlite/numba are pinned because newer releases ship no x86_64 macOS wheels).
 - `scripts/transcription_cleanup.py` (run with `.venv/bin/python`) provides `analyze` / `clean` / `beats` / `quantize` / `post` / `verify` / `consensus` subcommands used by the pipeline and `cleanup-score` skills.
 - `scripts/prepare_audio.sh <in> <out.wav>` — two-pass linear loudness normalization + 44.1 kHz resample; run on all audio before Transkun.
+- `scripts/apply_harmony_pedal.py <file.mscz>` — adds harmony-aware legato pedaling to a `.mscz` from the engraved harmony (one pedal per bar, split at harmony changes), via `analyze_pedaling.py` + `musescore_pedal_lib.py`. Use instead of CC64-derived pedal, which is binary and doesn't track harmony.
+- `scripts/clean_musicxml.py <file> --source generated` — final MusicXML cleanup (drops contradictory/duplicate dynamics, unpaired pedals); `--source generated` (default) skips OCR-only rules. `--source omr` for Audiveris input.
 
 ## Output layout
 
@@ -20,17 +22,17 @@ One directory per piece, named by the slugified video title:
 
 ```
 output/<slug>/
-├── <slug>.wav        # prepared audio (44.1 kHz, loudness-normalized) — transcription input
-├── <slug>.mp3        # listening copy
-├── <slug>.mid        # Transkun transcription (performance timing, unquantized)
-├── <slug>.musicxml   # quantized score (interchange format)
-├── <slug>.mscz       # native MuseScore 4 file (for direct editing)
-├── <slug>.pdf        # printable score (from .mscz) — also the visual-inspection artifact
-├── <slug>.cleaned.*  # cleanup-score products (mid/musicxml/mscz/pdf) — originals stay untouched
+├── <slug>.wav        # prepared audio (44.1 kHz, loudness-normalized) — transcription input  [original, never overwrite]
+├── <slug>.mp3        # listening copy  [original]
+├── <slug>.mid        # raw Transkun transcription (performance timing, unquantized)  [original]
+├── <slug>.cleaned.mid  # DELIVERABLE: cleaned MIDI (artifacts removed, tempo/meter/key meta) — the faithful "recording"
+├── <slug>.musicxml   # ┐ DELIVERABLE: the ONE score (quantized + cleaned + clef changes + harmony
+├── <slug>.mscz       # ┤ pedaling, all baked in). mscz for editing, musicxml for interchange, pdf for
+├── <slug>.pdf        # ┘ printing + visual inspection. No separate "cleaned"/"pedaled" variants.
 ├── beats.json        # audio beat-tracking (librosa) — drives rubato-aware quantization
 ├── clean_report.json # machine summary of the MIDI clean pass
 ├── verify.json       # per-bar score-vs-recording similarity (chroma DTW)
-└── CLEANUP_NOTES.md  # what was changed + what to verify by ear
+└── CLEANUP_NOTES.md  # what was decided automatically + the prioritized hand-off (finish by ear)
 ```
 
 ## Pipeline stage commands
@@ -48,18 +50,24 @@ mv 'output/<slug>/<slug>.prepared.wav' 'output/<slug>/<slug>.wav'
 # 2. Audio → MIDI
 .venv/bin/transkun 'output/<slug>/<slug>.wav' 'output/<slug>/<slug>.mid' --device cpu
 
-# 3. MIDI → MusicXML (script quantizer — NEVER MuseScore's MIDI import),
-#    then the pedal pass (the score must reflect the MIDI's actual CC64
-#    pedaling), then .mscz via mscore (format conversion only).
-#    BPM from the user / web ground truth, else an analyze candidate;
-#    verify via score_seconds_at_bpm ≈ audio_seconds in the summary.
+# 3. MIDI → MusicXML (script quantizer — NEVER MuseScore's MIDI import) → post
+#    (spelling/ties/dynamics/clef changes) → clean_musicxml → .mscz → harmony
+#    pedaling on the .mscz → regenerate .musicxml + .pdf from it (formats agree).
+#    BPM from the user / web ground truth, else an analyze candidate.
+#    Pedaling is from the engraved harmony, NOT CC64 (binary, doesn't track harmony).
 .venv/bin/python scripts/transcription_cleanup.py quantize \
-  'output/<slug>/<slug>.mid' 'output/<slug>/<slug>.musicxml' --bpm <bpm>
+  'output/<slug>/<slug>.cleaned.mid' 'output/<slug>/<slug>.tmp.musicxml' --bpm <bpm> \
+  --key '<key>' --time-sig '<ts>' --title '<t>' --composer '<c>'
 .venv/bin/python scripts/transcription_cleanup.py post \
-  'output/<slug>/<slug>.musicxml' 'output/<slug>/<slug>.musicxml' \
-  --pedal-from 'output/<slug>/<slug>.mid'
+  'output/<slug>/<slug>.tmp.musicxml' 'output/<slug>/<slug>.musicxml' \
+  --key '<key>' --time-sig '<ts>' --dynamics-from 'output/<slug>/<slug>.cleaned.mid'
+rm 'output/<slug>/<slug>.tmp.musicxml'
+.venv/bin/python scripts/clean_musicxml.py \
+  'output/<slug>/<slug>.musicxml' -o 'output/<slug>/<slug>.musicxml' --source generated
 MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 "$MSCORE" 'output/<slug>/<slug>.musicxml' -o 'output/<slug>/<slug>.mscz'
+.venv/bin/python scripts/apply_harmony_pedal.py 'output/<slug>/<slug>.mscz'
+"$MSCORE" 'output/<slug>/<slug>.mscz' -o 'output/<slug>/<slug>.musicxml'
 "$MSCORE" 'output/<slug>/<slug>.mscz' -o 'output/<slug>/<slug>.pdf'
 ```
 
