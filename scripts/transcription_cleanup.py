@@ -1638,6 +1638,64 @@ def find_hairpins(profile, min_delta=12, min_span=3.0):
     return hairpins
 
 
+def assign_bass_clefs(score, min_run=3, hi=57, lo=52):
+    """Switch the bass staff to treble clef for SUSTAINED high passages and back
+    to bass when it descends. A measure prefers treble when its lowest note sits
+    at/above the top of the bass staff (>= hi, A3 by default) and bass when it
+    drops to <= lo (E3); in between it carries the current clef. A treble run
+    shorter than `min_run` bars is demoted back to bass — an isolated high bar is
+    more readable with ledger lines than with a clef that lasts a bar or two.
+    Returns the number of clef changes inserted."""
+    from music21 import clef
+    from music21.stream import Measure
+
+    parts = list(score.parts)
+    if len(parts) < 2:
+        return 0
+
+    def avg_midi(part):
+        ps = [x.midi for n in part.recurse().notes
+              for x in (n.pitches if hasattr(n, "pitches") else [n.pitch])]
+        return sum(ps) / len(ps) if ps else 60.0
+
+    bass = min(parts, key=avg_midi)
+    measures = list(bass.getElementsByClass(Measure))
+
+    pref, cur = [], "bass"
+    for m in measures:
+        ps = [x.midi for n in m.notes
+              for x in (n.pitches if hasattr(n, "pitches") else [n.pitch])]
+        if not ps:
+            pref.append(cur)            # empty bar: carry
+        elif min(ps) >= hi:
+            cur = "treble"; pref.append("treble")
+        elif min(ps) <= lo:
+            cur = "bass"; pref.append("bass")
+        else:
+            pref.append(cur)            # neutral register: carry
+
+    # Demote treble runs shorter than min_run back to bass (the home clef).
+    i = 0
+    while i < len(pref):
+        j = i
+        while j < len(pref) and pref[j] == pref[i]:
+            j += 1
+        if pref[i] == "treble" and j - i < min_run:
+            for k in range(i, j):
+                pref[k] = "bass"
+        i = j
+
+    changes, cur = 0, "bass"  # the part's default clef is bass
+    for idx, m in enumerate(measures):
+        if pref[idx] != cur:
+            for c in list(m.getElementsByClass(clef.Clef)):
+                m.remove(c)
+            m.insert(0, clef.TrebleClef() if pref[idx] == "treble" else clef.BassClef())
+            cur = pref[idx]
+            changes += 1
+    return changes
+
+
 def cmd_post(args):
     from music21 import converter, dynamics as m21dyn, expressions, key as m21key, meter
     from music21.stream import Measure
@@ -1970,6 +2028,8 @@ def cmd_post(args):
             i = j + 1
         if flags:
             changes["modulation_flags"] = flags
+
+    changes["bass_clef_changes"] = assign_bass_clefs(score)
 
     normalize_accidentals(score)
 
