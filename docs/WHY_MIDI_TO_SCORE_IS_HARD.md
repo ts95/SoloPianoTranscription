@@ -280,7 +280,34 @@ they would do the most good — worth flagging plainly so the §6 list is action
 Both are small, local changes to `cmd_quantize` with outsized effect on how busy the scores look.
 The remaining items below are larger; the inline `[done/partial this session]` markers in the
 tiers are from earlier sessions — treat #1 and #2 here as the authoritative current status for the
-two they touch (still **partial/gap**, not done).
+two they touch.
+
+> **[this repo] Both changes are now implemented — and building the gate produced a sharp
+> empirical confirmation of §3.1.** The default grid is now `1/16` and `quantize` reports an
+> `onset_grid_fit` and refuses below 0.30 (override `--force`); covered by
+> `scripts/test_quantize_grid.py`. But verifying the gate on real data revealed it is far weaker
+> than item #1 hoped, for a *fundamental* reason. Sweeping the Gareth Emery cover across BPMs:
+>
+> | BPM | 65 | 97.5 | 100 | 130 (true) | 173 | 260 |
+> |---|---|---|---|---|---|---|
+> | `onset_grid_fit` | 0.57 | 0.575 | 0.574 | 0.567 | 0.547 | 0.57 |
+> | duration mismatch | 0.3% | 0.8% | 1.5% | 1.7% | 2.0% | 2.7% |
+>
+> **Both candidate "wrong-grid" signals are essentially invariant to the metrical level**, including
+> the 2:1 (65 / 130 / 260) octaves. `onset_grid_fit` sits at the base rate of a uniform onset
+> distribution (≈ 2·0.07/0.25 ≈ 0.56) for *every* tempo, because accumulated rubato de-phases the
+> onsets against any fixed t=0 grid; and `score_seconds_at_bpm ≈ audio_seconds` is BPM-invariant *by
+> construction* (it is `span_in_beats × 60/bpm`). This is exactly §3.1's claim — the metrical level
+> is not recoverable from onsets alone — reproduced on our own pieces. **Consequences, applied:**
+> (a) the gate is honestly scoped to *gross misalignment* only (real fixed-grid pieces score ~0.5,
+> the Skrillex bad audio-grid 0.25, a uniform half-slot offset 0.0) — it is a tripwire, not a tempo
+> validator; (b) the inline summary `note` that claimed "a big mismatch means the BPM is wrong" was
+> **false and is corrected** — duration mismatch reflects quantization rounding, nothing about
+> tempo; (c) the *only* reliable defence against a wrong metrical level remains **external ground
+> truth** (the web-lookup step), which the pipeline already mandates — there is no onset-derived
+> shortcut, and pretending otherwise would be the kind of unverified claim §9 exists to catch.
+
+The remaining items below are larger and still **gap/partial**.
 
 ### Tier 1 — highest leverage, low effort (mostly already in motion)
 

@@ -839,6 +839,37 @@ def cmd_quantize(args):
         summary["mode"] = "fixed-grid"
         summary["bpm"] = float(bpm)
 
+    # Grid-fit gate: the fraction of onsets within 0.07 beat of a grid slot.
+    # SCOPE (verified empirically — see docs/WHY_MIDI_TO_SCORE_IS_HARD.md sec 6.0):
+    # this catches a *grossly misaligned* grid (broken beats.json, wrong phase, a
+    # grid far too coarse for the content) — real fixed-grid pieces score ~0.5+,
+    # the Skrillex bad audio-grid scored ~0.25, a uniform half-slot offset scores 0.
+    # It does NOT catch a wrong metrical level / octave-off BPM: on a dense piece
+    # the fit sits at the base rate (~2*0.07/0.25 ~= 0.56) for *every* BPM, because
+    # the metrical level is not recoverable from onsets alone (sec 3.1) — that is
+    # what the pipeline's external ground-truth lookup is for. Refuse a grossly
+    # mis-snapped score unless --force.
+    grid_f = float(grid)
+
+    def _raw_ql(t):
+        return (warp(t) - warp_base) if warp else t * float(bpm) / 60.0
+
+    devs = [abs(_raw_ql(n.start) / grid_f - round(_raw_ql(n.start) / grid_f)) * grid_f
+            for n in notes]
+    fit = sum(1 for d in devs if d <= 0.07) / len(devs)
+    summary["onset_grid_fit"] = round(fit, 3)
+    MIN_GRID_FIT = 0.30
+    if fit < MIN_GRID_FIT and not args.force:
+        summary["error"] = (
+            f"onset_grid_fit {fit:.2f} < {MIN_GRID_FIT}: onsets are grossly misaligned "
+            f"with the 1/{args.grid} grid (a real fixed-grid piece scores ~0.5+). Likely "
+            "a broken beats.json, wrong grid phase, or a grid far too coarse. NOTE: this "
+            "gate does NOT catch a wrong metrical level / octave-off BPM — onset fit is "
+            "base-rate-invariant to that (sec 3.1); confirm the BPM from ground truth. "
+            "Fix the grid, try --beats, or pass --force.")
+        print(json.dumps(summary, indent=2))
+        return 1
+
     def to_ql(t):
         if warp:
             return Fraction(warp(t) - warp_base).limit_denominator(100000)
@@ -1184,8 +1215,9 @@ def cmd_quantize(args):
     else:
         summary["score_seconds_at_bpm"] = round(
             float(score.highestTime - pad) * 60 / float(bpm), 1)
-        summary["note"] = ("score_seconds_at_bpm should be within a few percent of "
-                           "audio_seconds; a big mismatch means the BPM is wrong")
+        summary["note"] = ("score_seconds_at_bpm vs audio_seconds reflects quantization "
+                           "rounding only — it is BPM-invariant by construction (verified) "
+                           "and does NOT validate the tempo; get the BPM from ground truth")
     if pad:
         summary["offset_shift_beats"] = int(pad)
         summary["note_post"] = ("pass --offset-shift "
@@ -1994,8 +2026,13 @@ def main():
     q.add_argument("--beats-shift", type=float, default=0.0,
                    help="seconds to subtract from beat times (the clean pass's "
                         "trim_shift_s) when quantizing a trimmed .mid")
-    q.add_argument("--grid", type=int, default=32,
-                   help="onset grid as a note-value denominator (default 32 = 32nd notes)")
+    q.add_argument("--grid", type=int, default=16,
+                   help="onset grid as a note-value denominator (default 16 = 16th "
+                        "notes; deepen to 32 only where the onset histogram shows "
+                        "real 32nds — a busy grid engraves expressive lean as confetti)")
+    q.add_argument("--force", action="store_true",
+                   help="engrave even if the onset-grid fit is below the gate "
+                        "(use only when you have confirmed the grid by ear)")
     q.add_argument("--split", default="auto",
                    help='hand-split pitch, e.g. "E3"; default: auto from pitch-gap analysis')
     q.add_argument("--key", help='e.g. "D major" — inserts the key signature')
