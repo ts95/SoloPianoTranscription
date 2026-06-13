@@ -1105,11 +1105,14 @@ def cmd_quantize(args):
             last = i + 1 >= len(onsets)
             beat_cap = min(cap, Fraction(_math.ceil(off + 1)) - off)
             # Sustain exception: a lone melody/bass note that clearly rings on
-            # (>=1.5x the gap) over later onsets in other registers keeps its
-            # length — it becomes voice 2 of the staff at re-barring. Only for
-            # finger-held rings: a pedal-carried ring is acoustic smear, and
-            # the pedal marks already convey it.
+            # over later onsets in other registers keeps its length — it becomes
+            # voice 2 of the staff at re-barring. A second voice costs padding
+            # rests in both voices, so it must be EARNED: the note has to ring at
+            # least a HALF NOTE (real polyphony / a pedal point), not merely 1.5x
+            # a 16th — in a dense texture that fires constantly and sprays rests.
+            # Only for finger-held rings: a pedal-carried ring is acoustic smear.
             if (len(pitches) == 1 and raw_dur >= cap * Fraction(3, 2)
+                    and raw_dur >= Fraction(2)
                     and not any(abs(p - pitches[0]) < 3
                                 for j in range(i + 1, len(onsets))
                                 if onsets[j] < off + raw_dur
