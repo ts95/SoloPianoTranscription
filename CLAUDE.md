@@ -88,6 +88,7 @@ After producing any score, inspect it for statistical outliers — transcription
 ## Docs
 
 - **Keep README.md and CLAUDE.md in sync with reality and each other.** Whenever a change makes either outdated (pipeline stages, commands, file layout, dependencies, skills), update both in the same delivery — README.md for humans (overview, setup, usage), CLAUDE.md for the agent (commands, paths, gotchas). Never describe the old pipeline in one file and the new one in the other.
+- `docs/WHY_MIDI_TO_SCORE_IS_HARD.md` — cited survey of the performance-to-score literature (Cemgil, Nakamura, Desain & Honing, MV2H, neural/GNN approaches) plus the fixable-vs-irreducible breakdown and a tiered improvement roadmap for this pipeline. Read it before proposing structural changes to `quantize`/`post`: the two load-bearing verdicts are (a) quantization is a simplicity-vs-accuracy trade-off you *tune* (default coarser grids, deepen only on onset-histogram evidence), not a grid you snap to; (b) voice separation and rhythm are *one* coupled problem — our sequential quantize→assign-hands is the main architectural debt. When the user says the score feels worse than the MIDI, part of that gap is irreducible (a score is a lossy abstraction of a performance) — set that expectation rather than chasing it.
 
 ## Git
 
