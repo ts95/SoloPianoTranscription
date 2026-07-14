@@ -899,6 +899,11 @@ def cmd_quantize(args):
 
     def pedal_covered(a, b, frac=0.6):
         """True when >= frac of the beat-interval [a, b] has the pedal down."""
+        if args.pedal_sustain == "always":
+            # The delivered score carries per-bar harmony pedaling, so treat
+            # the whole piece as pedaled — CC64 under-detection (synth/washy
+            # sources) otherwise leaves short performed lengths + rest spray.
+            return True
         if b <= a:
             return False
         cov = sum(max(0, min(b, y) - max(a, x)) for x, y in pedal_iv)
@@ -1125,7 +1130,10 @@ def cmd_quantize(args):
                 if not last and cap > LONG_GAP and pedal_covered(off + 1, off + cap):
                     # ring across a long same-staff silence is pedal wash:
                     # hold to the next beat boundary, rest the remainder
-                    dur = beat_cap
+                    # ('always' mode: the engraved pedal carries it to the
+                    # next onset, up to one bar — same rule as the fill branch)
+                    dur = (cap if args.pedal_sustain == "always"
+                           and cap <= beats_per_bar else beat_cap)
             elif not args.no_legato_fill:
                 # Legato assumption (default): every note fills the gap to the
                 # next same-hand onset, however early the key was released —
@@ -1143,7 +1151,8 @@ def cmd_quantize(args):
                 under_pedal = pedal_covered(off, off + cap)
                 if ending or cap <= LONG_GAP:
                     dur = cap
-                elif under_pedal and args.pedal_sustain == "bar" and cap <= beats_per_bar:
+                elif (under_pedal and args.pedal_sustain in ("bar", "always")
+                        and cap <= beats_per_bar):
                     # Under sustained pedal a rest is acoustically impossible (the
                     # strings ring) and the performed length is decay-clipped, so
                     # ring to the next onset for gaps up to one bar: a once-per-bar
@@ -2112,11 +2121,15 @@ def main():
     q.add_argument("--force", action="store_true",
                    help="engrave even if the onset-grid fit is below the gate "
                         "(use only when you have confirmed the grid by ear)")
-    q.add_argument("--pedal-sustain", choices=["bar", "beat"], default="bar",
+    q.add_argument("--pedal-sustain", choices=["bar", "beat", "always"], default="bar",
                    help="how far a note rings under sustained pedal: 'bar' (default) "
                         "fills to the next barline so a once-per-bar bass note becomes "
                         "a whole note; 'beat' holds only to the next beat (groove "
-                        "pieces where the bass pulse must stay visible)")
+                        "pieces where the bass pulse must stay visible); 'always' "
+                        "applies the 'bar' rule to the whole piece regardless of CC64 "
+                        "(use when the score gets per-bar harmony pedaling but Transkun "
+                        "under-detected the pedal — short performed lengths otherwise "
+                        "engrave as note + rest spray)")
     q.add_argument("--split", default="auto",
                    help='hand-split pitch, e.g. "E3"; default: auto from pitch-gap analysis')
     q.add_argument("--key", help='e.g. "D major" — inserts the key signature')

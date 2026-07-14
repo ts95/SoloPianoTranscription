@@ -218,8 +218,42 @@ def test_pedal_fills_short_gaps_no_rest():
     print("ok: rests under sustained pedal filled into held notes")
 
 
+def test_always_mode_fills_without_cc64():
+    """--pedal-sustain always: when the score gets per-bar harmony pedaling
+    but the transcriber under-detected CC64 (e.g. synth sources), gaps must
+    still fill like under pedal — no note + rest spray."""
+    with tempfile.TemporaryDirectory() as d:
+        mid = os.path.join(d, "t.mid")
+        pm = pretty_midi.PrettyMIDI(initial_tempo=120)
+        inst = pretty_midi.Instrument(program=0)
+        for b in range(4):
+            inst.notes.append(pretty_midi.Note(velocity=80, pitch=72,
+                                               start=b * 2.0, end=b * 2.0 + 1.8))
+            # once-per-bar bass note released after 0.15 s, NO pedal CC at all
+            inst.notes.append(pretty_midi.Note(velocity=85, pitch=40,
+                                               start=b * 2.0, end=b * 2.0 + 0.15))
+        pm.instruments.append(inst)
+        pm.write(mid)
+        from music21 import converter
+        maxql = {}
+        for mode in ("bar", "always"):
+            out = os.path.join(d, f"t.{mode}.musicxml")
+            subprocess.run([PY, SCRIPT, "quantize", mid, out, "--bpm", "120",
+                            "--time-sig", "4/4", "--split", "C4",
+                            "--bar-phase", "0", "--pedal-sustain", mode],
+                           capture_output=True, text=True, check=True)
+            bass = converter.parse(out).parts[-1]
+            maxql[mode] = max(float(n.duration.quarterLength)
+                              for n in bass.recurse().notes)
+        assert maxql["bar"] < 4.0, "no-CC64 control unexpectedly filled"
+        assert maxql["always"] == 4.0, (
+            f"'always' mode did not fill the pedaled bar (max ql {maxql['always']})")
+    print("ok: 'always' mode fills gaps with no CC64 present")
+
+
 if __name__ == "__main__":
     test_pedal_smear_not_engraved()
     test_pedal_bar_fill_makes_whole_note()
     test_pedal_marks_from_mid()
     test_pedal_fills_short_gaps_no_rest()
+    test_always_mode_fills_without_cc64()
