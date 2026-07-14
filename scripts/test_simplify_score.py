@@ -71,7 +71,24 @@ def test_span_capped_never_loses_harmony():
           "never losing harmony")
 
 
+def test_beams_survive_thinning():
+    gm = [55, 58, 62, 67]
+    rh = [(o, gm, 0.5) for o in (0.0, 0.5, 1.0, 1.5)]
+    s = two_staff_score(rh, [(0.0, [43], 2.0)])
+    for p in s.parts:
+        p.makeBeams(inPlace=True)
+    part = list(s.parts)[0]
+    before = [len(e.beams.beamsList) for e in part.recurse().notes]
+    assert any(before), "test setup: no beams to preserve"
+    simplify(s, 4.0)
+    after = [len(e.beams.beamsList) for e in part.recurse().notes]
+    assert after == before, (
+        f"thinning changed beam groups: {before} -> {after}")
+    print("ok: beam groups survive chord thinning")
+
+
 if __name__ == "__main__":
     test_repeat_strikes_thinned()
     test_lh_stack_reduced_when_rh_covers()
     test_span_capped_never_loses_harmony()
+    test_beams_survive_thinning()

@@ -76,6 +76,7 @@ def replace_pitches(part, el, keep_midis, stats):
     new.duration = el.duration
     new.expressions = el.expressions
     new.articulations = el.articulations
+    new.beams = el.beams  # keep the beam group; a bare note un-beams its run
     parent.replace(el, new)
     return new
 
