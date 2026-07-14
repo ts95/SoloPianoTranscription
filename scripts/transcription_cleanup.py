@@ -782,7 +782,7 @@ def cmd_quantize(args):
     from fractions import Fraction
     from music21 import (chord as m21chord, duration as m21dur, expressions as m21expr,
                          key as m21key, meter as m21meter, note as m21note,
-                         stream as m21stream)
+                         stream as m21stream, tie as m21tie)
 
     pm = pretty_midi.PrettyMIDI(args.input)
     notes = all_notes(pm)
@@ -1102,6 +1102,7 @@ def cmd_quantize(args):
                 te.style.fontStyle = "italic"
                 marks.append((beat_k, te))
         items, capped, sustained, filled, arpeggiated, pedal_filled = [], 0, 0, 0, 0, 0
+        tie_filled = 0
         import math as _math
         LONG_GAP = Fraction(5, 4)  # same-staff silence longer than this is
         # musical space (the hand left), not a legato articulation gap
@@ -1183,9 +1184,27 @@ def cmd_quantize(args):
                 eb = int(end)
                 if end > eb and div_by_beat.get(eb) in (3, 6) and Fraction(eb) > off:
                     dur = Fraction(eb) - off
+            # An on-grid fill duration (dur == the gap to the next onset, or
+            # the beat boundary) is INTENDED to be exact: if no single note
+            # value expresses it (e.g. 1.25), engrave tied pieces instead of
+            # rounding down and leaving a spurious sub-beat rest. Performed
+            # (raw) durations still round down — tying arbitrary fractions
+            # would bring the 16th-tie confetti back.
+            # (the staff-final event's cap IS its raw duration — not a fill)
+            exact_fill = (not ternary and not last
+                          and (dur == cap or dur == beat_cap))
+            pieces, rem = [], max(dur, grid)
+            while rem >= grid:
+                c = dur_down(rem, ternary)
+                pieces.append(c)
+                rem -= c
+            if not pieces:
+                pieces = [grid]
+            if not exact_fill:
+                pieces = pieces[:1]
             el = (m21note.Note(pitches[0]) if len(pitches) == 1
                   else m21chord.Chord(pitches))
-            el.duration = m21dur.Duration(dur_down(max(dur, grid), ternary))
+            el.duration = m21dur.Duration(pieces[0])
             # A "chord" whose source onsets are spread in time is a rolled
             # chord — engrave the roll (arpeggiate squiggle), don't silently
             # flatten it into a block chord.
@@ -1195,11 +1214,24 @@ def cmd_quantize(args):
                     el.expressions.append(m21expr.ArpeggioMark())
                     arpeggiated += 1
             items.append((off + pad, el))
+            if len(pieces) > 1:
+                el.tie = m21tie.Tie("start")
+                t_off = off + pieces[0]
+                for k, pc in enumerate(pieces[1:]):
+                    cont = (m21note.Note(pitches[0]) if len(pitches) == 1
+                            else m21chord.Chord(pitches))
+                    cont.duration = m21dur.Duration(pc)
+                    cont.tie = m21tie.Tie(
+                        "stop" if k == len(pieces) - 2 else "continue")
+                    items.append((t_off + pad, cont))
+                    t_off += pc
+                tie_filled += 1
         score.insert(0, build_measured_part(items, marks, ts_str, f"P1-{name}"))
         summary["staves"][name] = {"events": len(onsets),
                                    "durations_capped_at_next_onset": capped,
                                    "legato_filled_to_next_onset": filled,
                                    "pedal_gap_filled": pedal_filled,
+                                   "rest_absorbing_tie_fills": tie_filled,
                                    "sustained_as_second_voice": sustained,
                                    "rolled_chords_arpeggiated": arpeggiated}
 
