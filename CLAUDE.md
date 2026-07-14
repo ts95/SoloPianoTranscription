@@ -15,6 +15,7 @@ Pipeline for transcribing solo piano performances from YouTube into editable she
 - `scripts/prepare_audio.sh <in> <out.wav>` — two-pass linear loudness normalization + 44.1 kHz resample; run on all audio before Transkun.
 - `scripts/apply_harmony_pedal.py <file.mscz>` — adds harmony-aware legato pedaling to a `.mscz` from the engraved harmony (one pedal per bar, split at harmony changes), via `analyze_pedaling.py` + `musescore_pedal_lib.py`. Use instead of CC64-derived pedal, which is binary and doesn't track harmony.
 - `scripts/clean_musicxml.py <file> --source generated` — final MusicXML cleanup (drops contradictory/duplicate dynamics, unpaired pedals); `--source generated` (default) skips OCR-only rules. `--source omr` for Audiveris input.
+- `scripts/simplify_score.py <in.musicxml> -o <out.musicxml>` — **on request only** (an arrangement edit, not part of the default pipeline): playability reduction for Synthesia-style stacked scores. Thins off-beat chord re-strikes under the per-bar pedal to melody/bass skeleton, reduces LH stacks the RH already voices, caps hand spans at an octave (drop pitch-class-doubled notes, else octave-fold — never loses a pitch class; ties untouched). Runs between `post` and `clean_musicxml`; keeps the original key-aware spelling. The cleaned MIDI stays the faithful capture.
 
 ## Output layout
 

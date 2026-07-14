@@ -110,6 +110,8 @@ MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 
 `transcription_cleanup.py` also provides `analyze` (read-only JSON report: key/meter/tempo estimates, artifact candidates, rubato, fast runs), `beats` (beat tracking seeded with a known BPM — librosa on the recording, or `--from-midi` to DP-track the transcription's own onsets, which follows deep ritardandi the audio tracker cannot, or `--refine` to lock a fixed grid to the hinted tempo and smoothly refine it to the onsets — best for steady syncopated grooves that mislead both trackers), `verify` (render + per-bar chroma comparison against the recording), `consensus` (cross-check against pitch-shifted re-transcriptions), and `clean`/`post` (the cleanup-score machinery).
 
+On request, `scripts/simplify_score.py` (run between `post` and `clean_musicxml.py`) turns a faithful-but-unplayable engraving (Synthesia-style full stacks re-struck on every 16th) into a playable edition: off-beat re-strikes under the per-bar pedal thin to a melody/bass skeleton, left-hand stacks the right hand already voices reduce to bass + octave/fifth, and chords wider than an octave drop pitch-class-doubled notes or octave-fold inward — harmony (pitch-class content), melody, bass roots, and rhythm are preserved. This is an arrangement edit, so it is not part of the default pipeline; the cleaned MIDI remains the faithful capture.
+
 ## Limitations: the score is a foundation
 
 **The engraved score is a foundation to finish by hand, not a final deliverable.**
