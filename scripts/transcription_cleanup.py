@@ -376,7 +376,12 @@ def cmd_clean(args):
 
 
 # Single-symbol note values (incl. dotted), longest first, for duration snapping.
-EXPRESSIBLE_QL = [6, 4, 3, 2, 1.5, 1, 0.75, 0.5, 0.375, 0.25, 0.1875, 0.125, 0.0625]
+EXPRESSIBLE_QL = [7, 6, 4, 3.5, 3, 2, 1.75, 1.5, 1, 0.875, 0.75, 0.5,
+                  0.375, 0.25, 0.1875, 0.125, 0.0625]
+# 7 / 3.5 / 1.75 / 0.875 are double-dotted values: without them a legato
+# fill of e.g. 1.75 beats rounds down to a dotted quarter + spurious 16th
+# rest (dur_down only rounds DOWN, so these only appear when the gap is
+# exactly double-dotted — they don't make ordinary notes busier)
 # Tuplet durations music21 can express as single symbols (triplet 4th/8th/16th/32nd).
 TUPLET_QL = ["2/3", "1/3", "1/6", "1/12"]
 

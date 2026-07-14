@@ -218,6 +218,37 @@ def test_pedal_fills_short_gaps_no_rest():
     print("ok: rests under sustained pedal filled into held notes")
 
 
+def test_double_dotted_fill_no_rest_confetti():
+    """A gap of 1.75 beats under pedal must engrave as ONE double-dotted
+    quarter, not dotted quarter + 16th rest (dur_down's vocabulary)."""
+    with tempfile.TemporaryDirectory() as d:
+        mid = os.path.join(d, "t.mid")
+        out = os.path.join(d, "t.musicxml")
+        pm = pretty_midi.PrettyMIDI(initial_tempo=120)  # beat = 0.5 s
+        inst = pretty_midi.Instrument(program=0)
+        for b in range(4):
+            inst.notes.append(pretty_midi.Note(velocity=80, pitch=72,
+                                               start=b * 2.0, end=b * 2.0 + 1.8))
+            # bass: onsets at beats 0 and 1.75 of each bar (gap 1.75 / 2.25)
+            for beat in (0.0, 1.75 * 0.5):
+                t = b * 2.0 + beat
+                inst.notes.append(pretty_midi.Note(velocity=85, pitch=40,
+                                                   start=t, end=t + 0.1))
+        inst.control_changes.append(pretty_midi.ControlChange(64, 100, 0.0))
+        inst.control_changes.append(pretty_midi.ControlChange(64, 0, 8.5))
+        pm.instruments.append(inst)
+        pm.write(mid)
+        subprocess.run([PY, SCRIPT, "quantize", mid, out, "--bpm", "120",
+                        "--time-sig", "4/4", "--split", "C4", "--bar-phase", "0",
+                        "--grid", "16"],
+                       capture_output=True, text=True, check=True)
+        from music21 import converter
+        bass = converter.parse(out).parts[-1]
+        quls = [float(n.duration.quarterLength) for n in bass.recurse().notes]
+        assert 1.75 in quls, f"no double-dotted quarter engraved: {quls}"
+    print("ok: 1.75-beat pedal fill engraves double-dotted, not note+rest")
+
+
 def test_always_mode_fills_without_cc64():
     """--pedal-sustain always: when the score gets per-bar harmony pedaling
     but the transcriber under-detected CC64 (e.g. synth sources), gaps must
@@ -256,4 +287,5 @@ if __name__ == "__main__":
     test_pedal_bar_fill_makes_whole_note()
     test_pedal_marks_from_mid()
     test_pedal_fills_short_gaps_no_rest()
+    test_double_dotted_fill_no_rest_confetti()
     test_always_mode_fills_without_cc64()
