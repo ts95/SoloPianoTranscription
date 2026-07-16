@@ -104,6 +104,8 @@ rm output/<slug>/<slug>.tmp.musicxml
 MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 "$MSCORE" output/<slug>/<slug>.musicxml -o output/<slug>/<slug>.mscz
 .venv/bin/python scripts/apply_harmony_pedal.py output/<slug>/<slug>.mscz   # pedal from harmony, not CC64
+#   (add --midi output/<slug>/<slug>.cleaned.mid --beats output/<slug>/beats.json to also
+#    write the schedule into the cleaned MIDI as CC64 when the transcriber under-detected pedal)
 "$MSCORE" output/<slug>/<slug>.mscz -o output/<slug>/<slug>.musicxml        # regenerate so all formats agree
 "$MSCORE" output/<slug>/<slug>.mscz -o output/<slug>/<slug>.pdf
 ```

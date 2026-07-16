@@ -21,12 +21,56 @@ from musescore_pedal_lib import (
 from analyze_pedaling import analyze_measure
 
 
+def write_midi_pedal(midi_path, get_pedals_fn, measure_numbers, ticks_map,
+                     beats_path):
+    """Write the harmony-pedal schedule into a MIDI as CC64, REPLACING any
+    existing sustain events (the transcriber's CC64 under-detects pedal on
+    synth/washy sources). Measure ticks (480/quarter) map to global beats,
+    then to seconds through beats.json — so this assumes the MIDI starts on
+    the grid's bar 1 beat 1 (bar-phase 0, no pickup)."""
+    import json
+
+    import pretty_midi
+
+    with open(beats_path) as f:
+        beats = json.load(f)["beats"]
+
+    def beat_to_s(b):
+        i = max(0, min(int(b), len(beats) - 2))
+        return beats[i] + (b - i) * (beats[i + 1] - beats[i])
+
+    events = []
+    cursor = 0.0  # global beat of the current measure's downbeat
+    for mnum in measure_numbers:
+        mt = ticks_map[mnum]
+        for start_tick, end_tick, _span in get_pedals_fn(mnum):
+            events.append((beat_to_s(cursor + start_tick / 480), 127))
+            events.append((beat_to_s(cursor + end_tick / 480), 0))
+        cursor += mt / 480
+
+    pm = pretty_midi.PrettyMIDI(midi_path)
+    inst = pm.instruments[0]
+    inst.control_changes = [c for c in inst.control_changes if c.number != 64]
+    for t, v in events:
+        inst.control_changes.append(
+            pretty_midi.ControlChange(64, v, max(0.0, t)))
+    inst.control_changes.sort(key=lambda c: c.time)
+    pm.write(midi_path)
+    return len(events) // 2
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("mscz")
     ap.add_argument("--staff", default="2", help="staff to pedal (default 2 = bass)")
     ap.add_argument("--keep-backup", action="store_true")
+    ap.add_argument("--midi", help="also write the pedal schedule into this "
+                                   ".mid as CC64 (replaces existing sustain)")
+    ap.add_argument("--beats", help="beats.json mapping beats to seconds "
+                                    "(required with --midi)")
     args = ap.parse_args()
+    if args.midi and not args.beats:
+        ap.error("--midi requires --beats")
 
     if not os.path.exists(args.mscz):
         print(f"ERROR: not found: {args.mscz}", file=sys.stderr)
@@ -46,6 +90,14 @@ def main():
         time_sig_fn=lambda m: sigs.get(m, "4/4"))
 
     add_pedals(args.mscz, cfg, staff_id=args.staff)
+
+    if args.midi:
+        ordered = [r["number"] for r in results]
+        n = write_midi_pedal(args.midi, cfg, ordered,
+                             {r["number"]: r["ticks"] for r in results},
+                             args.beats)
+        print(f"CC64 pedal written to {args.midi}: {n} regions "
+              "(replaced existing sustain)")
 
     if not args.keep_backup:
         bak = args.mscz + ".bak"
