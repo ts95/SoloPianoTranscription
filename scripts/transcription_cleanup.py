@@ -805,7 +805,6 @@ def repeat_align(events, beats_per_bar, grid=16):
     events: [(note_id, onset_beats, pitch)] for ALL notes, both hands.
     Returns (deltas {note_id: Fraction beats to subtract}, report [dict]).
     """
-    import statistics
     from collections import Counter, defaultdict
     from fractions import Fraction
 
@@ -894,7 +893,8 @@ def repeat_align(events, beats_per_bar, grid=16):
         ref = min(members, key=lambda k: slot_err(wins[k]))
         if slot_err(wins[ref]) > REF_CLEAN:
             report.extend({"window": k + 1, "reference_window": ref + 1,
-                           "applied": False, "reason": "no clean reference"}
+                           "coverage": None, "applied": False,
+                           "reason": "no clean reference"}
                           for k in members if k != ref)
             continue
         for k in members:
