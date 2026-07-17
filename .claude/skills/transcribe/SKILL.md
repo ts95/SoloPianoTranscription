@@ -34,32 +34,14 @@ Follow the `audio-to-midi` skill:
 
 This takes a few minutes on CPU — run it in the background and wait for it; don't assume it hung.
 
-## Stage 3 — MIDI → MusicXML + MuseScore file
+## Stage 3 — MIDI → score (the full cleanup flow)
 
-Follow the `midi-to-musicxml` skill (exports both formats). **Never feed the `.mid` to MuseScore** — its import quantization is unreliable (auto-detects its own tempo, can lock onto the wrong pulse). Quantize with the project script, then use mscore only for the `.musicxml` → `.mscz` format conversion:
+Follow the `cleanup-score` skill start to finish — it IS stage 3. "Run the pipeline" means the delivered score, not a raw conversion: ground-truth lookup (key/BPM), `clean`, the **grid bake-off** (build `--refine` and `--from-midi` candidates, compare `onset_grid_fit`, check `weak_windows`/`level_hop_suspects`, hybrid-repair a winner with flagged windows), `quantize --beats` → `post` → `clean_musicxml` → `.mscz` → harmony pedaling → regenerated `.musicxml`/`.pdf` from the pedaled `.mscz`, then `verify`, PDF visual inspection, and `CLEANUP_NOTES.md`.
 
-```bash
-# BPM: prefer the user / web ground truth (original-song BPM for covers);
-# else an analyze candidate — see the midi-to-musicxml skill for validation.
-.venv/bin/python scripts/transcription_cleanup.py quantize \
-  'output/<slug>/<slug>.mid' 'output/<slug>/<slug>.musicxml' --bpm <bpm>
-# Pedal rule: the score must reflect the MIDI's actual CC64 pedaling
-.venv/bin/python scripts/transcription_cleanup.py post \
-  'output/<slug>/<slug>.musicxml' 'output/<slug>/<slug>.musicxml' \
-  --pedal-from 'output/<slug>/<slug>.mid'
-MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
-"$MSCORE" 'output/<slug>/<slug>.musicxml' -o 'output/<slug>/<slug>.mscz'
-"$MSCORE" 'output/<slug>/<slug>.mscz' -o 'output/<slug>/<slug>.pdf'
-```
+Non-negotiables carried by that skill: never feed a `.mid` to MuseScore; the lint verdict must be "ok" before delivering; every final `.mscz` gets a visually-inspected PDF; a real performance's CC64 stays in the cleaned MIDI.
 
-Check the quantize summary: `score_seconds_at_bpm` must be within a few percent of `audio_seconds`, otherwise the BPM is wrong — try another candidate.
-
-**Visual inspection (rule)**: Read the PDF (at least first, a busy middle, and final page) and look for obvious engraving issues — floating/doubled marks, pedal not under the bass staff, collisions, voice clutter, rest spray, drone durations. Fix what is decidable, re-export, re-inspect; flag the rest.
+(For a quick single-file conversion outside the pipeline, the `midi-to-musicxml` skill still covers the minimal path.)
 
 ## Wrap up
 
-Report all artifact paths (mp3, mid, musicxml, mscz) and remind the user:
-
-- Suggest running `/cleanup-score output/<slug>/` next — it fixes key/meter/tempo and transcription artifacts automatically and produces a verify-by-ear checklist.
-- The `.mid` can be auditioned to check transcription quality before investing cleanup time.
-- The `.musicxml` is for other notation software; the `.mscz` opens directly in MuseScore 4.
+Report all artifact paths (mp3, cleaned.mid, musicxml, mscz, pdf) plus the top verify-by-ear items from `CLEANUP_NOTES.md`, so the user knows where to spend their listening time. The `.musicxml` is for other notation software; the `.mscz` opens directly in MuseScore 4.

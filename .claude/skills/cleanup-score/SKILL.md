@@ -29,7 +29,7 @@ Identify the piece from the slug / video title (composer, work, movement). Web-s
 
 Interpret the JSON with musical judgment:
 
-- **Key**: prefer web ground truth; else top `key_estimates` entry. If ground truth and analysis disagree on a published work, trust ground truth and flag the disagreement. If neither is confident, omit `--key` and flag.
+- **Key**: prefer web ground truth; else top `key_estimates` entry. If ground truth and analysis disagree on a published work, trust ground truth and flag the disagreement. If neither is confident, omit `--key` and flag. **Enharmonic spelling**: when the detected key has 6+ accidentals (A♭ minor, C♭ major, C♯ major…), quantize with its simpler enharmonic too and keep whichever gets the lower `printed_accidental_ratio` in the lint (A♭ minor's 7 flats scored 0.49 = PROBLEM where G♯ minor's 5 sharps scored 0.38 = ok, same notes).
 - **Meter**: prefer ground truth. Statistically, the strongest `grouping_scores` entry suggests beats per bar — sanity-check `bpm_candidates` against the piece's character (a value can be double/half the true tempo).
 - **Tempo**: the BPM drives the entire quantization grid in step 4, so get it right. Prefer ground truth / the user's word over the statistical candidates: autocorrelation locks onto the dominant *pulse*, which can be a subdivision — not just 2×/half but e.g. the dotted-eighth of a 3-3-2 groove (4/3 of the true BPM; observed on an EDM cover where candidates said 171/86 and the truth was 125). Validate with the `quantize` summary's `score_seconds_at_bpm` vs `audio_seconds` fields, and check that `duration ÷ (60/bpm × beats-per-bar)` gives a plausible bar count.
 - **Rubato**: check `tempo_stability.verdict`, and run the audio beat tracker for a second opinion:
@@ -39,9 +39,25 @@ Interpret the JSON with musical judgment:
     'output/<slug>/<slug>.wav' 'output/<slug>/beats.json' --bpm-hint <bpm>
   ```
 
-  (Works on the mp3 too for pre-WAV pieces.) Always pass `--bpm-hint` when ground truth exists — it pins the metrical level; without it the tracker can lock onto a sub-pulse exactly like the autocorrelation does. **Grid choice**: if the beats report says "steady", use the fixed `--bpm` grid in step 4 (cleaner notation); if "some rubato"/"rubato", use `--beats` so barlines follow the performance. Heavy rubato still gets flagged prominently either way.
+  (Works on the mp3 too for pre-WAV pieces.) Always pass `--bpm-hint` when ground truth exists — it pins the metrical level; without it the tracker can lock onto a sub-pulse exactly like the autocorrelation does. If the report says "steady" a fixed `--bpm` grid in step 4 is also a candidate (cleaner notation) — but the choice is measured, never assumed:
 
-  **Validate the grid before quantizing with it** — fraction of MIDI onsets within 0.07 beat of a 16th slot (`onset_grid_fit` in the `--refine` report; compute the same metric by hand for other grids). A grid scoring ~0.25 mis-snaps most notes (shifted melody, false dotted rhythms). On syncopated grooves (3-3-2) *both* the audio tracker and `--from-midi` chase the accent layer; there use `beats --refine <mid> --bpm-hint <bpm> --midi-shift <trim_shift_s>` — fixed grid scanned around the hint, smoothly refined to the onsets, level-locked. ~0.7 with onset-position peaks centered on the 16th slots is healthy for human grooves.
+  **Grid choice is a measured bake-off (rule).** Build BOTH grid families on the same cleaned MIDI and take the measured winner — never override `analyze`'s rubato verdict with a genre guess, and never trust one family because it "should" fit this kind of piece:
+
+  ```bash
+  # candidates (run all; sweep --refine over 2-3 hints — its fit varies a lot with the hint)
+  .venv/bin/python scripts/transcription_cleanup.py beats '<slug>.wav' 'beats.refine<h>.json' \
+    --refine '<slug>.cleaned.mid' --bpm-hint <h> --midi-shift <trim_shift_s>
+  .venv/bin/python scripts/transcription_cleanup.py beats '<slug>.wav' 'beats.frommidi.json' \
+    --from-midi '<slug>.cleaned.mid' --bpm-hint <bpm> --midi-shift <trim_shift_s>
+  ```
+
+  Every `--refine`/`--from-midi` report carries the verdict fields; compare and pick:
+
+  - `onset_grid_fit` — the headline score (fraction of onsets within 0.07 beat of a 16th slot). Judge it against the right ceiling: sequenced/synthesia ≈ 1.0, steady human ≈ 0.99, jittery syncopated human ≈ 0.85–0.90 (best-available at 0.87 is fine; ~0.7 that LOSES to another candidate is not).
+  - `weak_windows` — **a good global fit can hide a localized failure**; any window listed here means the grid breaks somewhere specific (bad bridge, raced ritardando) even if the global number looks like a winner.
+  - `level_hop_suspects` — windows where the tracker changed metrical level (period near 1/2, 3/4, 4/3, or 2× the global median). Continuous even-16th washes make level AND phase onset-ambiguous (every sub-multiple grid fits perfectly), so the DP can hop to the dotted-eighth layer for one section with barely a dent in the global fit. A deep genuine ritardando can also appear here — judge by whether periods *grow smoothly* (real rit) or *sit at a ratio* (hop).
+
+  A winner with clean windows ships as `beats.json` (keep the losers as `beats.<variant>.json` for reference). A winner with flagged windows needs a **hybrid repair**: keep its beats where the windows are clean, and rebuild the flagged span as a continuous lattice anchored on the last good downbeat (phase/level locked by *continuity* with the neighboring sections — the onsets cannot decide it there), nudged to local onsets; track a closing ritardando from the note-cluster spacing (beat = 4 × local 16th gap). Re-probe the spliced grid (`grid_fit_probe` in the script is importable) until windows are clean, and put the surgery in CLEANUP_NOTES.
 - **Thresholds**: review the `artifact_candidates`/`ghost_candidates` samples. Be conservative: when a candidate might be a real grace note or ornament, keep it (raise `--vel-ratio` down / `--min-dur` down) and flag it instead.
 
 ## 3. Clean the MIDI
@@ -99,6 +115,8 @@ Multi-tempo / multi-key pieces: with `--beats`, sustained tempo plateaus (>12% f
 `post` does the canned notation fixes: enharmonic respelling toward the key, merging fragmented tied chains, moving clearly out-of-range notes to the correct staff, **bass-staff clef changes** (treble clef for sustained high left-hand runs ≥3 bars, bass otherwise — `bass_clef_changes` in the summary), and **dynamics from MIDI velocities** — level marks (pp–ff) at changes plus cresc./dim. hairpins where the velocity profile trends steadily. Check `dynamics_preview` in the analyze report first; if the proposed levels look like noise (e.g. constant-velocity synthesized audio), drop `--dynamics-from`.
 
 **Pedaling (rule)**: pedal is added from the *engraved harmony*, not CC64. `apply_harmony_pedal.py` lays one syncopated (legato) pedal per bar with a mid-bar re-pedal where the bass harmony changes (`analyze_pedaling.py` decides). Transkun's CC64 is only binary (0/127) and under-segments fast re-pedaling, so it does not track harmony — do **not** use `post --pedal-from` for the engraved score. (CC64 still informs duration decisions in `quantize`.) After pedaling the `.mscz`, regenerate `.musicxml` and `.pdf` from it so all formats agree.
+
+**Performed CC64 stays in the cleaned MIDI (rule)**: `apply_harmony_pedal.py --midi/--beats` *replaces* the cleaned MIDI's sustain with the harmony schedule — use that only when Transkun under-detected the pedal (synth/washy sources; check `pedal down fraction` against what you hear). For a real performance the transcribed CC64 is part of the faithful capture: leave the cleaned MIDI alone (if it was overwritten, re-run `clean` to restore it).
 
 ## 5. Bespoke repair pass (model judgment)
 

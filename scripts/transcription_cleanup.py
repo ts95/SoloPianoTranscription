@@ -1754,6 +1754,67 @@ def refine_fixed_grid_to_midi(mid_path, bpm_hint, midi_shift=0.0):
     return bl, fit
 
 
+def grid_fit_probe(mid_path, beats, midi_shift=0.0, window=16, step=8):
+    """Windowed onset-fit + metrical-level probe for a beat grid.
+
+    A global onset fit hides localized failures: in a continuous even-16th
+    wash every sub-multiple grid (and every 16th-shifted phase) fits the
+    onsets perfectly, so the tracker can hop to the dotted-eighth layer for
+    one section and the global number barely moves (Cry Me A River 2026-07:
+    global 0.94 with the bridge tracked at ×3/4 and the final rit raced).
+    This reports fit per sliding window and flags windows whose median beat
+    period sits near an accent-layer ratio (3/4, 4/3, 1/2, 2) of the global
+    median — those need a level fix, not more nudging.
+    """
+    import bisect as _bisect
+    import pretty_midi
+    pm = pretty_midi.PrettyMIDI(mid_path)
+    onsets = sorted(n.start + midi_shift for i in pm.instruments for n in i.notes)
+
+    def fit_between(t0, t1):
+        seg = [t for t in onsets if t0 <= t < t1]
+        if not seg:
+            return None, 0
+        n_in = 0
+        for t in seg:
+            i = _bisect.bisect_right(beats, t) - 1
+            i = max(0, min(i, len(beats) - 2))
+            frac = (t - beats[i]) / (beats[i + 1] - beats[i])
+            pos = i + frac
+            if abs(pos * 4 - round(pos * 4)) / 4 <= 0.07:
+                n_in += 1
+        return n_in / len(seg), len(seg)
+
+    global_fit, _ = fit_between(beats[0], beats[-1])
+    periods = [b - a for a, b in zip(beats, beats[1:])]
+    med = statistics.median(periods)
+    weak, hops = [], []
+    for i0 in range(0, len(beats) - window, step):
+        i1 = i0 + window
+        f, n = fit_between(beats[i0], beats[i1])
+        wmed = statistics.median(periods[i0:i1])
+        ratio = wmed / med
+        entry = {"beats": [i0, i1], "bar_approx": [i0 // 4 + 1, i1 // 4 + 1],
+                 "time": [round(beats[i0], 1), round(beats[i1], 1)],
+                 "fit": round(f, 3) if f is not None else None,
+                 "period_ratio_to_global": round(ratio, 3)}
+        if f is not None and n >= 8 and f < 0.85:
+            weak.append(entry)
+        if any(abs(ratio - r) < 0.07 for r in (0.5, 0.75, 4 / 3, 2.0)):
+            hops.append(entry)
+    return {
+        "onset_grid_fit": round(global_fit, 3) if global_fit is not None else None,
+        "weak_windows": weak,
+        "level_hop_suspects": hops,
+        "note": ("weak_windows: fit < 0.85 over a 16-beat window — localized grid "
+                 "failure a global fit hides. level_hop_suspects: window period near "
+                 "an accent-layer ratio (1/2, 3/4, 4/3, 2) of the global median — the "
+                 "tracker changed metrical level there (continuous 16th textures make "
+                 "level AND phase onset-ambiguous; fix by continuity with the "
+                 "surrounding sections, not by re-nudging)."),
+    }
+
+
 def cmd_beats(args):
     """Beat-track the recording with librosa, or — with --from-midi — track the
     transcription's own onsets (preferred for heavy rubato), or — with --refine
@@ -1807,7 +1868,12 @@ def cmd_beats(args):
                       else "rubato"),
         "beats": beats,
     }
-    if onset_grid_fit is not None:
+    probe_mid = args.refine or args.from_midi
+    if probe_mid:
+        # refine already shifted onsets internally; probe in the audio domain both ways
+        probe = grid_fit_probe(probe_mid, beats, args.midi_shift)
+        report.update(probe)
+    elif onset_grid_fit is not None:
         report["onset_grid_fit"] = round(onset_grid_fit, 3)
     if args.bpm_hint and periods:
         ratio = (60 / statistics.median(periods)) / args.bpm_hint

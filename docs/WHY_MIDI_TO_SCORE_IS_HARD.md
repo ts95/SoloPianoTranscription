@@ -179,6 +179,28 @@ lock onto a metrically-strong *sub-pulse* rather than the true beat.
 > syncopated human ≈ 0.85–0.90. Priors pick candidates; measurements pick winners; probes
 > authenticate the winner.
 >
+> **[this repo] Cry Me A River (2026-07): the probe itself needed hardening — global
+> statistics hide local level hops.** The from-midi grid won the bake-off at 0.940 and
+> passed the global probe (period CV 0.072, 4.7% jumps, no alternation). The user's ear
+> found what the numbers hid: from bar 72 the bridge's rhythm "broke down completely."
+> Per-bar measurement showed the DP had hopped to the dotted-eighth layer (period 0.84 s
+> → 0.65 s = ×3/4, engraved as a fake ♩=91) through the bridge, and raced at a fake-fast
+> tempo through the closing ritardando — two localized failures averaging into clean
+> global stats. The underlying identifiability problem: both regions are continuous
+> even-16th washes, where *every* sub-multiple grid and every 16th-shifted phase fits the
+> onsets perfectly (measured: fit invariant under quarter-beat phase shifts). Onset
+> evidence cannot choose the metrical level or the bar phase there — only continuity with
+> the surrounding sections can, which is a structural argument, not a local-evidence one.
+> The repair was piecewise by provenance: keep the from-midi beats where windowed fit was
+> clean (body 0.997, slow section 0.958), rebuild the flagged spans as one continuous
+> lattice anchored on the last trustworthy downbeat (level and phase inherited by
+> continuity, drift absorbed by refine-style nudging), and track the final ritardando
+> from raw note-cluster spacing (beat = 4 × local 16th gap; periods grew 0.95 → 1.16 →
+> 1.48 s, matching the performance). Global fit rose to 0.978 with no level hops. The
+> windowed probe (`weak_windows` / `level_hop_suspects`) is now computed by the `beats`
+> subcommand on every run: measurements pick winners, probes authenticate the winner —
+> and probes must be local, because failure is.
+>
 > **[this repo] The Skrillex 3-3-2 groove is a textbook case.** Autocorrelation BPM candidates
 > were 85.7 / 171.4; the *true* tempo was ~128.5 — the trackers had locked onto the dotted-eighth
 > of the 3-3-2 pattern (4/3 of the real beat). Both the audio tracker *and* the onset-DP tracker
