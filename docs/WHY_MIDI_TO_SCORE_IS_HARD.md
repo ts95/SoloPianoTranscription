@@ -163,6 +163,22 @@ lock onto a metrically-strong *sub-pulse* rather than the true beat.
 > build both candidate grids and take the one with the higher onset fit, since a "healthy
 > looking" 0.7 is indefensible the moment another grid reaches 0.99 on identical data.
 >
+> **[this repo] Make Things For Smile (2026-07): the comparison rule survives its hardest
+> case, with one added instrument.** A second Skrillex 3-3-2 cover with the same
+> autocorrelation signature (85.7/171.4 candidates) — precisely the regime where the repo's
+> earlier lesson said "onset-DP smears between metrical layers, use refine." Measured instead:
+> refine scored 0.61/0.79/0.83 across hints 120/125/128.5; `--from-midi` scored **0.874** and
+> won. The catch is that on syncopated music a from-midi win must be authenticated before use —
+> the failure mode it risks is locking onto the accent layer. The probe: inspect the winning
+> grid's beat-period *sequence*. Genuine tracking is smooth (here: median 0.46 s, CV 0.096, 9%
+> of periods jumping >15%, no fast/slow alternation); accent-chasing oscillates between layers
+> (the 0.35/0.7 s signature). Result: a difficult, humanly-jittery syncopated performance
+> engraved as a usable foundation — dotted-quarter 3-3-2 bass under coherent 16ths — at a fit
+> (0.874) that is the realistic *ceiling* for this performance class, not a deficiency.
+> Calibration across the repo's pieces: sequenced ≈ 1.0, steady human ≈ 0.99, jittery
+> syncopated human ≈ 0.85–0.90. Priors pick candidates; measurements pick winners; probes
+> authenticate the winner.
+>
 > **[this repo] The Skrillex 3-3-2 groove is a textbook case.** Autocorrelation BPM candidates
 > were 85.7 / 171.4; the *true* tempo was ~128.5 — the trackers had locked onto the dotted-eighth
 > of the 3-3-2 pattern (4/3 of the real beat). Both the audio tracker *and* the onset-DP tracker
