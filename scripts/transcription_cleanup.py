@@ -912,12 +912,19 @@ def repeat_align(events, beats_per_bar, grid=16):
             if abs(delta) < MIN_SHIFT:
                 continue  # snap already agrees — silently leave alone
             entry["shift_beats"] = round(delta, 3)
+            # Uniformity test on a TRIMMED residual: drop the worst ~15% of
+            # paired residuals first, so a uniformly-rushed figure body with a
+            # couple of differently-placed boundary pickup notes (anticipations
+            # into the next bar) still qualifies. Genuinely non-uniform bars
+            # stay rejected — their residuals don't separate into a tight body
+            # plus a few outliers.
             resid = sorted(abs(d - delta) for d in ds)
-            p90 = resid[min(len(resid) - 1, int(0.9 * len(resid)))]
+            keep = max(1, int(round(0.85 * len(resid))))
+            trimmed_resid = resid[keep - 1]
             if ternaryish(wins[ref]) or ternaryish(wins[k]):
                 entry["reason"] = "tuplet window (auto-fix exempt in v1)"
-            elif p90 > MAX_RESIDUAL_P90:
-                entry["reason"] = f"non-uniform timing (residual p90 {p90:.2f})"
+            elif trimmed_resid > MAX_RESIDUAL_P90:
+                entry["reason"] = f"non-uniform timing (residual {trimmed_resid:.2f})"
             else:
                 entry["applied"] = True
                 d = Fraction(str(round(delta, 4)))

@@ -59,6 +59,19 @@ def test_subthreshold_untouched_unflagged():
     print("ok: sub-threshold shift left alone silently")
 
 
+def test_boundary_pickup_outlier_still_applied():
+    # figure uniformly shifted 0.24 except the last note only 0.11 (a
+    # differently-placed boundary pickup) -> trimmed uniformity test passes
+    evs = (bar_events(0, start_id=0)
+           + bar_events(1, shift=0.24, jitter=[0, 0, 0, 0, 0, -0.13], start_id=100)
+           + bar_events(2, start_id=200))
+    deltas, report = repeat_align(evs, 4)
+    applied = [e for e in report if e.get("applied") and e["window"] == 2]
+    assert applied, f"uniform body with one boundary outlier should apply: {report}"
+    assert {100 + k for k in range(len(FIGURE))} == set(deltas), deltas
+    print("ok: boundary pickup outlier trimmed; uniform body still auto-applied")
+
+
 def test_quantize_engraves_repeats_identically():
     """End to end: bar 2 rushed 0.24 beat -> all three bars engrave the same."""
     PY, SCRIPT = sys.executable, os.path.join(
@@ -100,4 +113,5 @@ if __name__ == "__main__":
     test_uniform_rush_fixed()
     test_variation_flagged_not_touched()
     test_subthreshold_untouched_unflagged()
+    test_boundary_pickup_outlier_still_applied()
     test_quantize_engraves_repeats_identically()

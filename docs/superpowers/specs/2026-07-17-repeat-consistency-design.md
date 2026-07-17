@@ -64,7 +64,9 @@ For each non-reference instance, estimate one constant shift
 all three gates hold**:
 
 1. `|δ| ≥ 0.10` beat — small shifts don't change the snap; don't touch them.
-2. residual p90 after removing δ ≤ 0.07 beat — it is genuinely one uniform
+2. the worst-15%-trimmed residual after removing δ ≤ 0.07 beat (a
+   uniformly-rushed figure body qualifies even when a couple of boundary
+   pickup notes are placed differently) — it is genuinely one uniform
    rush, not free timing.
 3. pairing coverage ≥ 85% (from §2).
 
