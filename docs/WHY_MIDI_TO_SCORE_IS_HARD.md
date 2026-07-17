@@ -150,6 +150,19 @@ If the beat grid is wrong, *every* downstream decision is wrong — melody lands
 slot, durations fragment, barlines drift. And beat trackers fail in a characteristic way: they
 lock onto a metrically-strong *sub-pulse* rather than the true beat.
 
+> **[this repo] Coffin Dance (2026-07): the failure is comparative, and "sounds steady" is
+> not evidence.** `analyze` reported heavy rubato (CV 0.35) on a straight-eighth ostinato; the
+> operator overrode it ("dense figuration fooling the windowed estimate") and shipped a
+> hint-pinned refined grid with onset fit 0.67–0.78 — which engraved straight eighths as
+> dotted figures and 144 spurious 16ths, and drove the repeat-alignment pass to "fix" 5
+> phantom rushed repeats (identical bars drifting against the grid). The onset-DP grid
+> (`beats --from-midi`) scored **0.994** on the same onsets, collapsed the subdivision profile
+> to the true 182-eighths/2-sixteenths, zeroed the phantom repeat fixes, and tracked the
+> closing ritardando exactly. Two lessons now encoded as a rule: (a) the rubato verdict is a
+> *measurement* — do not override it with a genre prior; (b) grid selection is a comparison:
+> build both candidate grids and take the one with the higher onset fit, since a "healthy
+> looking" 0.7 is indefensible the moment another grid reaches 0.99 on identical data.
+>
 > **[this repo] The Skrillex 3-3-2 groove is a textbook case.** Autocorrelation BPM candidates
 > were 85.7 / 171.4; the *true* tempo was ~128.5 — the trackers had locked onto the dotted-eighth
 > of the 3-3-2 pattern (4/3 of the real beat). Both the audio tracker *and* the onset-DP tracker
