@@ -502,6 +502,31 @@ def build_measured_part(items, marks, ts_str, part_id):
     return ps
 
 
+def pad_parts_equal(score, ts_str):
+    """All staves must span the same number of measures: music21 pads a
+    shorter part with truly EMPTY trailing measures at export, which MuseScore
+    rejects as corruption ("Found: 0/1. Expected: 4/4."). Pad explicitly with
+    full-bar rests — and move the padded part's final barline to the new last
+    measure (makeMeasures stamped it on the pre-pad last measure, where it
+    would render as a final bar mid-piece)."""
+    from fractions import Fraction
+
+    from music21 import bar as m21bar, meter as m21meter, note as m21note
+    from music21.stream import Measure as M21Measure
+    bar_ql = Fraction(m21meter.TimeSignature(ts_str).barDuration.quarterLength)
+    part_list = list(score.parts)
+    counts = [len(p.getElementsByClass(M21Measure)) for p in part_list]
+    for p, cnt in zip(part_list, counts):
+        if cnt < max(counts):
+            last = p.getElementsByClass(M21Measure)[-1]
+            for k in range(cnt, max(counts)):
+                meas = M21Measure(number=k + 1)
+                meas.insert(0, m21note.Rest(quarterLength=float(bar_ql)))
+                p.insert(float(Fraction(last.offset) + bar_ql * (k - cnt + 1)), meas)
+            last.rightBarline = None
+            meas.rightBarline = m21bar.Barline("final")
+
+
 def normalize_accidentals(score):
     """Strip stale natural-accidental objects, then recompute accidental display
     against the key context. makeMeasures attaches Accidental('natural') objects
@@ -1235,21 +1260,7 @@ def cmd_quantize(args):
                                    "sustained_as_second_voice": sustained,
                                    "rolled_chords_arpeggiated": arpeggiated}
 
-    # Both staves must span the same number of measures: music21 pads a
-    # shorter part with truly EMPTY trailing measures at export, which
-    # MuseScore rejects as corruption ("Found: 0/1. Expected: 4/4.").
-    # Pad explicitly with full-bar rests.
-    from music21.stream import Measure as M21Measure
-    bar_ql = Fraction(m21meter.TimeSignature(ts_str).barDuration.quarterLength)
-    part_list = list(score.parts)
-    counts = [len(p.getElementsByClass(M21Measure)) for p in part_list]
-    for p, cnt in zip(part_list, counts):
-        if cnt < max(counts):
-            last = p.getElementsByClass(M21Measure)[-1]
-            for k in range(cnt, max(counts)):
-                meas = M21Measure(number=k + 1)
-                meas.insert(0, m21note.Rest(quarterLength=float(bar_ql)))
-                p.insert(float(Fraction(last.offset) + bar_ql * (k - cnt + 1)), meas)
+    pad_parts_equal(score, ts_str)
 
     normalize_accidentals(score)
 
@@ -1813,6 +1824,7 @@ def cmd_post(args):
             new_score.insert(0, ps)
         if len(new_parts) == 2:
             new_score.insert(0, layout.StaffGroup(new_parts, symbol="brace", barTogether=True))
+        pad_parts_equal(new_score, args.time_sig)
         score = new_score
         parts = new_parts
         treble = sorted(parts, key=avg_pitch, reverse=True)[0] if len(parts) == 2 else None
