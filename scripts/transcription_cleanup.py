@@ -983,11 +983,21 @@ def repeat_align(events, beats_per_bar, grid=16):
         best_claim = {}  # other_id -> (interior_dist, window k)
         for k, pairs in member_pairs.items():
             for other_id, ref_off, delta in pairs:
-                d = interior_dist(ref_off + delta)
+                fo = ref_off + delta  # the note's framed offset in window k
+                # A note at framed offset >= beats_per_bar is a LATER bar's note
+                # pulled into k's pool (a clean next-bar downbeat sits at exactly
+                # beats_per_bar). It shares interior_dist 0.0 with its true home
+                # window k+1 (where it sits at offset 0.0), and the strict-`<`
+                # tie-break would otherwise let the earlier window k keep the
+                # claim and shift that clean note by k's correction. Window k
+                # must never claim it — its physical home is k+1 (Fix C).
+                if fo >= beats_per_bar - 1e-9:
+                    continue
+                d = interior_dist(fo)
                 if other_id not in best_claim or d < best_claim[other_id][0]:
                     best_claim[other_id] = (d, k)
         member_pairs = {
-            k: [pr for pr in pairs if best_claim[pr[0]][1] == k]
+            k: [pr for pr in pairs if best_claim.get(pr[0], (None, None))[1] == k]
             for k, pairs in member_pairs.items()}
         # every note claimed by a paired match somewhere in this group — an
         # unpaired-note fallback in ANY window must not re-move a reclaimed note
@@ -1020,20 +1030,6 @@ def repeat_align(events, beats_per_bar, grid=16):
             group_delta = {g: statistics.median(d for _, d in items)
                            for g, items in by_group.items()}
 
-            # Evidence gate (Fix NEW-3): auto-fix is only trustworthy when at
-            # least one beat-group actually TESTED local uniformity, i.e. had
-            # >=2 paired notes. A bar whose every group is a single pair (a
-            # sparse one-note-per-beat texture) offers zero within-group
-            # evidence, so any per-note delta pattern — even a maximally
-            # scattered, sign-alternating one — would otherwise sail through
-            # the vacuous uniformity gate and clone deliberate variation. If no
-            # group has >=2 pairs, refuse to apply and flag it.
-            if not any(len(items) >= 2 for items in by_group.values()):
-                entry["reason"] = ("insufficient uniformity evidence "
-                                   "(no beat-group has 2+ paired notes)")
-                report.append(entry)
-                continue
-
             # Gate 1: local uniformity, per estimable (>=2-pair) group. A
             # single-pair group is trivially uniform (residual 0 against its
             # own median) — this is what subsumes the old whole-bar
@@ -1056,7 +1052,25 @@ def repeat_align(events, beats_per_bar, grid=16):
             # Gate 2: magnitude — at least one group's shift must be large
             # enough to change the snap, else the rush is already sub-
             # threshold and this window is left alone silently (no entry).
+            # This runs BEFORE the evidence gate so a clean sparse repeat (all
+            # group deltas ~0) is silently skipped rather than flagged.
             if not any(abs(d) >= MIN_SHIFT for d in group_delta.values()):
+                continue
+
+            # Evidence gate (Fix NEW-3): auto-fix is only trustworthy when at
+            # least one beat-group actually TESTED local uniformity, i.e. had
+            # >=2 paired notes. A bar whose every group is a single pair (a
+            # sparse one-note-per-beat texture) offers zero within-group
+            # evidence, so any per-note delta pattern — even a maximally
+            # scattered, sign-alternating one — would otherwise sail through
+            # the vacuous uniformity gate and clone deliberate variation. Runs
+            # AFTER the magnitude gate, so a clean sparse repeat is silently
+            # skipped and only a sparse bar with a real (>= MIN_SHIFT) scatter
+            # reaches here to be flagged.
+            if not any(len(items) >= 2 for items in by_group.values()):
+                entry["reason"] = ("insufficient uniformity evidence "
+                                   "(no beat-group has 2+ paired notes)")
+                report.append(entry)
                 continue
 
             entry["applied"] = True

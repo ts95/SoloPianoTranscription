@@ -61,9 +61,16 @@ dissolves — no fix and no flag. So pairing draws its candidate pool for a wind
 counts, so a neighbour's fringe never inflates coverage; the widening is purely
 additive (no leak ⇒ pool = home window ⇒ pairing unchanged). A reclaimed fringe
 note is corrected by the window it truly belongs to. One fringe note can appear
-in two adjacent pools; the claim whose framed offset sits most inside the bar
-wins, and a paired ("claimed") note is never re-moved by any window's
-unpaired-note fallback, so no note is shifted twice.
+in two adjacent pools; the claim is resolved toward the note's physical home
+window (Fix C). A note whose framed offset in window `k` is `>= beats_per_bar`
+belongs to a *later* bar — a clean next-bar downbeat sits at exactly
+`beats_per_bar` and shares interior_dist `0.0` with its true home window `k+1`
+(where it sits at offset `0.0`) — so window `k` never claims it; the earlier
+window may never shift a note whose musical home is a later bar. Among the
+remaining candidates (framed offset `< beats_per_bar`, including the left-fringe
+early-rushed notes a window reclaims) the more-interior claim wins. A paired
+("claimed") note is never re-moved by any window's unpaired-note fallback, so no
+note is shifted twice.
 
 Candidate pairs chain into groups by union-find.
 

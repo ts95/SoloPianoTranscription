@@ -197,6 +197,51 @@ def test_rushed_early_downbeat_figure():
     print("ok: rushed-early downbeat reclaimed across the bar line (full pairing)")
 
 
+def test_boundary_tie_no_clean_downbeat_shift():
+    """Fix C boundary-tie: a repeated tone plays at the downbeat AND just before
+    the next barline (pitch 99 at offsets 0.0 and 3.9 — a bass/pedal point).
+    When a middle bar is dragged LATE its pre-barline note crosses into the next
+    window; the NEXT bar's clean downbeat lands at framed offset == beats_per_bar
+    in the dragged window, ties on interior_dist, and before the fix is STOLEN by
+    the earlier (dragged) window and shifted. Invariant: a note whose physical
+    home window is k+1 must never be claimed/corrected by an earlier window k."""
+    FIG = [(0.0, 99), (0.5, 60), (1.0, 62), (2.0, 64), (3.0, 65), (3.9, 99)]
+
+    def cbar(bar, shift, start_id):
+        return [(start_id + k, bar * 4 + off + shift, p)
+                for k, (off, p) in enumerate(FIG)]
+
+    # bars 1 & 2 dragged LATE +0.20 (each pre-barline note crosses into the next
+    # window); bars 0 & 3 clean. Bar 3's downbeat is id 300 at absolute beat 12.0.
+    evs = (cbar(0, 0.0, 0) + cbar(1, 0.20, 100)
+           + cbar(2, 0.20, 200) + cbar(3, 0.0, 300))
+    deltas, report = repeat_align(evs, 4)
+    assert 300 not in deltas or float(deltas[300]) == 0.0, (
+        f"clean bar-3 downbeat (id 300) was shifted by an earlier window: "
+        f"delta={deltas.get(300)}")
+    print("ok: clean downbeat not stolen across the barline by an earlier window")
+
+
+def test_clean_sparse_repeat_not_flagged():
+    """Fix (evidence-gate ordering): a sparse one-note-per-beat figure that
+    recurs IDENTICALLY (all deltas ~0) has nothing wrong, so it must be SILENTLY
+    skipped by the magnitude gate — not flagged 'insufficient uniformity
+    evidence'. The evidence gate only makes sense for bars that carry a real
+    (>= MIN_SHIFT) scatter; a clean sparse repeat never reaches it."""
+    FIG = [(0.0, 60), (1.0, 64), (2.0, 67), (3.0, 72)]  # one note per beat
+
+    def sparse_bar(bar, start_id):
+        return [(start_id + k, bar * 4 + off, p)
+                for k, (off, p) in enumerate(FIG)]
+
+    evs = (sparse_bar(0, 0) + sparse_bar(1, 100) + sparse_bar(2, 200))
+    deltas, report = repeat_align(evs, 4)
+    assert not deltas, f"clean sparse repeat was modified: {deltas}"
+    assert not [e for e in report if e["window"] in (2, 3)], (
+        f"clean sparse repeat should be silently skipped, not flagged: {report}")
+    print("ok: clean sparse repeat silently skipped, not flagged")
+
+
 def test_quantize_engraves_repeats_identically():
     """End to end: bar 2 rushed 0.24 beat -> all three bars engrave the same."""
     PY, SCRIPT = sys.executable, os.path.join(
@@ -243,4 +288,6 @@ if __name__ == "__main__":
     test_sparse_texture_not_cloned()
     test_consensus_reference_beats_slot_aligned_loner()
     test_rushed_early_downbeat_figure()
+    test_boundary_tie_no_clean_downbeat_shift()
+    test_clean_sparse_repeat_not_flagged()
     test_quantize_engraves_repeats_identically()
