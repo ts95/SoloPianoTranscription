@@ -1074,6 +1074,10 @@ def cmd_quantize(args):
         cov = sum(max(0, min(b, y) - max(a, x)) for x, y in pedal_iv)
         return cov / (b - a) >= frac
 
+    ts_parts = (args.time_sig or "4/4").split("/")
+    beats_per_bar = int(ts_parts[0]) * 4 // int(ts_parts[1]) \
+        if (int(ts_parts[0]) * 4) % int(ts_parts[1]) == 0 else 0
+
     # Cluster near-simultaneous onsets per hand first: rolled/arpeggiated chord
     # attacks spread 10-80 ms, and snapping each note separately engraves a
     # chain of 32nds instead of one chord.
@@ -1092,13 +1096,33 @@ def cmd_quantize(args):
     def cluster_onset(cl):
         return cl[len(cl) // 2].start
 
+    # Repeat-consistency alignment (spec 2026-07-17): a uniformly rushed
+    # instance of a repeated bar is de-shifted BEFORE division selection and
+    # snapping, using the group's cleanest instance as reference.
+    rep_deltas, rep_report = {}, []
+    if not args.no_repeat_align:
+        rep_deltas, rep_report = repeat_align(
+            [(id(n), float(to_ql(n.start)), n.pitch) for n in notes],
+            beats_per_bar, args.grid)
+    if rep_report:
+        summary["repeat_alignment"] = rep_report
+
+    def n_on(n):
+        return to_ql(n.start) - rep_deltas.get(id(n), 0)
+
+    def n_end(n):
+        return to_ql(n.end) - rep_deltas.get(id(n), 0)
+
+    def cl_on(cl):
+        return n_on(cl[len(cl) // 2])
+
     # Per-beat subdivision selection: each beat picks the division (binary or
     # ternary) that best explains its onsets, with a complexity prior and a
     # bonus for the piece's prevailing division (Temperley-style). Genuine
     # triplets become real tuplets instead of being forced onto a binary grid.
     fracs_by_beat = {}
     for cl in (c for cs in hand_clusters.values() for c in cs):
-        q = float(to_ql(cluster_onset(cl)))
+        q = float(cl_on(cl))
         b = max(0, int(q))
         fracs_by_beat.setdefault(b, []).append(max(0.0, q - b))
 
@@ -1155,13 +1179,10 @@ def cmd_quantize(args):
         return Fraction(b) + Fraction(k, d)
 
     # Downbeat phase from meter-induction cues; bar 1 beat 1 should be a downbeat.
-    ts_parts = (args.time_sig or "4/4").split("/")
-    beats_per_bar = int(ts_parts[0]) * 4 // int(ts_parts[1]) \
-        if (int(ts_parts[0]) * 4) % int(ts_parts[1]) == 0 else 0
     pad = Fraction(0)
     if beats_per_bar >= 2:
-        events = [(float(to_ql(n.start)), n.pitch, n.velocity,
-                   float(to_ql(n.end) - to_ql(n.start))) for n in notes]
+        events = [(float(n_on(n)), n.pitch, n.velocity,
+                   float(n_end(n) - n_on(n))) for n in notes]
         phase, conf, cues = infer_bar_phase(events, beats_per_bar)
         summary["bar_phase"] = {"downbeat_at_beat": phase, "confidence": conf,
                                 "cues": cues}
@@ -1236,13 +1257,13 @@ def cmd_quantize(args):
     ts_str = args.time_sig or "4/4"
     # A mark inserted past a staff's last note gets dropped by makeMeasures —
     # host each tempo mark/text in a staff that still has content there.
-    treble_last = max((float(to_ql(n.start)) for n in notes
+    treble_last = max((float(n_on(n)) for n in notes
                        if hands[id(n)] == "treble"), default=0.0) + float(pad)
     score = m21stream.Score()
     for name in ("treble", "bass"):
         slots = {}
         for cl in hand_clusters[name]:
-            slots.setdefault(snap(to_ql(cluster_onset(cl))), []).extend(cl)
+            slots.setdefault(snap(cl_on(cl)), []).extend(cl)
         onsets = sorted(slots)
         marks = []
         if args.key:
@@ -1266,10 +1287,10 @@ def cmd_quantize(args):
         import math as _math
         LONG_GAP = Fraction(5, 4)  # same-staff silence longer than this is
         # musical space (the hand left), not a legato articulation gap
-        global_last_on = max(to_ql(n.start) for n in notes)
+        global_last_on = max(n_on(n) for n in notes)
         for i, off in enumerate(onsets):
             group = slots[off]
-            raw_dur = max(to_ql(n.end) - off for n in group)
+            raw_dur = max(n_end(n) - off for n in group)
             cap = onsets[i + 1] - off if i + 1 < len(onsets) else raw_dur
             pitches = sorted({n.pitch for n in group})
             dur = min(raw_dur, cap)
@@ -2348,6 +2369,10 @@ def main():
     q.add_argument("--no-legato-fill", action="store_true",
                    help="keep performed note lengths instead of filling gaps to the "
                         "next onset (for articulation-faithful engraving)")
+    q.add_argument("--no-repeat-align", action="store_true",
+                   help="disable repeat-consistency alignment (de-shifting a "
+                        "uniformly rushed instance of a repeated bar toward "
+                        "the group's cleanest instance before snapping)")
     q.add_argument("--title", help="piece title for the score header")
     q.add_argument("--composer", help="original composer/artist")
     q.add_argument("--arranger", help="arranger (cover/arrangement author), if applicable")

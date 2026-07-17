@@ -3,9 +3,10 @@
 Spec: docs/superpowers/specs/2026-07-17-repeat-consistency-design.md
 Run: .venv/bin/python scripts/test_repeat_align.py
 """
-import sys, os
+import sys, os, json, subprocess, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from transcription_cleanup import repeat_align
+import pretty_midi
 
 # the recurring figure: (in-bar beat, pitch) — 6 notes, both "hands"
 FIGURE = [(0.0, 36), (0.0, 60), (0.5, 62), (1.0, 64), (1.75, 65), (2.5, 67)]
@@ -58,7 +59,45 @@ def test_subthreshold_untouched_unflagged():
     print("ok: sub-threshold shift left alone silently")
 
 
+def test_quantize_engraves_repeats_identically():
+    """End to end: bar 2 rushed 0.24 beat -> all three bars engrave the same."""
+    PY, SCRIPT = sys.executable, os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "transcription_cleanup.py")
+    with tempfile.TemporaryDirectory() as d:
+        mid = os.path.join(d, "t.mid")
+        out = os.path.join(d, "t.musicxml")
+        pm = pretty_midi.PrettyMIDI(initial_tempo=120)  # beat = 0.5 s
+        inst = pretty_midi.Instrument(program=0)
+        figure = [(0.0, 36), (0.0, 60), (0.5, 62), (1.0, 64), (1.75, 65), (2.5, 67)]
+        for bar, shift in ((0, 0.0), (1, 0.24), (2, 0.0)):
+            for off, p in figure:
+                t = (bar * 4 + off + shift) * 0.5
+                inst.notes.append(pretty_midi.Note(velocity=80, pitch=p,
+                                                   start=t, end=t + 0.2))
+        pm.instruments.append(inst)
+        pm.write(mid)
+        r = subprocess.run([PY, SCRIPT, "quantize", mid, out, "--bpm", "120",
+                            "--time-sig", "4/4", "--bar-phase", "0"],
+                           capture_output=True, text=True, check=True)
+        summary = json.loads(r.stdout)
+        applied = [e for e in summary.get("repeat_alignment", [])
+                   if e.get("applied")]
+        assert applied and applied[0]["window"] == 2, summary.get("repeat_alignment")
+
+        from music21 import converter
+        s = converter.parse(out)
+        def bar_rhythm(part, n):
+            m = part.getElementsByClass('Measure')[n]
+            return [(float(e.offset), float(e.duration.quarterLength))
+                    for e in m.notes]
+        for part in s.parts:
+            b1, b2, b3 = (bar_rhythm(part, k) for k in range(3))
+            assert b1 == b2 == b3, f"bars differ after alignment: {b1} / {b2} / {b3}"
+    print("ok: quantize engraves the rushed bar identically to its references")
+
+
 if __name__ == "__main__":
     test_uniform_rush_fixed()
     test_variation_flagged_not_touched()
     test_subthreshold_untouched_unflagged()
+    test_quantize_engraves_repeats_identically()
