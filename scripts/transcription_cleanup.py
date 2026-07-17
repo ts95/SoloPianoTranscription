@@ -811,7 +811,7 @@ def repeat_align(events, beats_per_bar, grid=16):
     from fractions import Fraction
 
     MIN_NOTES, JACCARD, PAIR_WINDOW = 4, 0.8, 0.45
-    COVERAGE, REF_CLEAN, MIN_SHIFT, MAX_RESIDUAL_P90 = 0.85, 0.05, 0.10, 0.07
+    COVERAGE, REF_CLEAN, MIN_SHIFT, MAX_TRIMMED_RESID = 0.85, 0.05, 0.10, 0.07
 
     if not beats_per_bar or beats_per_bar < 2:
         return {}, []
@@ -855,6 +855,37 @@ def repeat_align(events, beats_per_bar, grid=16):
     def beat_group(off):
         return min(max(int(off), 0), beats_per_bar - 1)
 
+    def framed(k):
+        """Candidate pool for window k expressed in k's own in-bar frame,
+        WIDENED across the bar line (Fix NEW-1). w = int(on // beats_per_bar)
+        hard-slices before pairing, so a note rushed EARLIER than its in-bar
+        offset lands in window k-1 (and one dragged late lands in k+1); a
+        ±PAIR_WINDOW search inside a single hard-sliced window can't reach it,
+        and the whole match silently dissolves. Draw candidates from windows
+        {k-1, k, k+1}, re-express each at offset_in_k = absolute_beat -
+        k*beats_per_bar = stored_off + (j-k)*beats_per_bar, and keep those in
+        [-PAIR_WINDOW, beats_per_bar + PAIR_WINDOW) — i.e. window k's interior
+        plus a fringe of one search radius on each side. A reclaimed fringe
+        note is then treated as belonging to window k for its correction."""
+        pool = []
+        for j in (k - 1, k, k + 1):
+            for off, p, nid in wins.get(j, ()):
+                fo = off + (j - k) * beats_per_bar
+                if -PAIR_WINDOW <= fo < beats_per_bar + PAIR_WINDOW:
+                    pool.append((fo, p, nid))
+        return pool
+
+    def interior_dist(fo):
+        """Distance of a framed offset from window interior [0, beats_per_bar).
+        0 for a note that sits inside the bar (its home window); >0 for a fringe
+        note pulled from a neighbour. Used to resolve the rare case of one note
+        pairing in two adjacent windows — the more-interior claim wins."""
+        if fo < 0:
+            return -fo
+        if fo >= beats_per_bar:
+            return fo - beats_per_bar
+        return 0.0
+
     def trimmed_residual(deltas, center):
         """Worst-15%-trimmed residual: sorted |delta - center|, keep the
         top ~85% and report the largest surviving value."""
@@ -892,8 +923,16 @@ def repeat_align(events, beats_per_bar, grid=16):
                 continue
             if multiset_jaccard(wa, wb) < JACCARD:
                 continue
-            ds = pair_deltas(wa, wb)
-            if len(ds) / max(len(wa), len(wb)) < COVERAGE:
+            # Coverage with boundary-widened pairing (Fix NEW-1): try pairing
+            # each window's own notes against the OTHER's cross-window pool so a
+            # note that leaked over the bar line into a neighbour is reclaimed
+            # and the pair still forms. Take the better direction (whichever
+            # window leaked); the denominator stays the HOME note counts so a
+            # neighbour's fringe can't inflate coverage. Purely additive — with
+            # no leak the pool equals the home window and coverage is unchanged.
+            cov_n = max(len(pair_deltas(wa, framed(b))),
+                        len(pair_deltas(wb, framed(a))))
+            if cov_n / max(len(wa), len(wb)) < COVERAGE:
                 continue
             parent[find(a)] = find(b)
 
@@ -905,17 +944,59 @@ def repeat_align(events, beats_per_bar, grid=16):
     for members in groups.values():
         if len(members) < 2:
             continue
-        ref = min(members, key=lambda k: slot_err(wins[k]))
+        # Reference selection. slot_err is mod-slot, so an instance dragged by
+        # exactly one grid slot (e.g. +0.25) reads as perfectly clean and, on
+        # min-slot_err alone, could hijack the reference and rewrite the true
+        # majority onto wrong slots. For groups of >=3 pick the CONSENSUS /
+        # most-central instance instead — the one whose total absolute median
+        # pairwise shift to the other members is smallest — so two mutually
+        # agreeing instances outvote one slot-aligned loner. Tie-break (and the
+        # 2-member case, where no consensus is possible) fall back to slot_err.
+        if len(members) >= 3:
+            def centrality(cand):
+                total = 0.0
+                for m in members:
+                    if m == cand:
+                        continue
+                    ds = pair_deltas(wins[cand], wins[m])
+                    if ds:
+                        total += abs(statistics.median(d for _, _, d in ds))
+                return total
+            ref = min(members, key=lambda k: (centrality(k), slot_err(wins[k])))
+        else:
+            ref = min(members, key=lambda k: slot_err(wins[k]))
         if slot_err(wins[ref]) > REF_CLEAN:
             report.extend({"window": k + 1, "reference_window": ref + 1,
                            "coverage": None, "applied": False,
                            "reason": "no clean reference"}
                           for k in members if k != ref)
             continue
+
+        # Pair every non-reference member against the reference using its
+        # boundary-widened pool (Fix NEW-1), so a note rushed across the bar
+        # line and hard-sliced into a neighbour is reclaimed by the window it
+        # belongs to. One fringe note can appear in two adjacent windows' pools;
+        # resolve that by keeping the claim whose framed offset sits most inside
+        # the bar (its true home), so no note is corrected by two windows.
+        member_pairs = {k: pair_deltas(wins[ref], framed(k))
+                        for k in members if k != ref}
+        best_claim = {}  # other_id -> (interior_dist, window k)
+        for k, pairs in member_pairs.items():
+            for other_id, ref_off, delta in pairs:
+                d = interior_dist(ref_off + delta)
+                if other_id not in best_claim or d < best_claim[other_id][0]:
+                    best_claim[other_id] = (d, k)
+        member_pairs = {
+            k: [pr for pr in pairs if best_claim[pr[0]][1] == k]
+            for k, pairs in member_pairs.items()}
+        # every note claimed by a paired match somewhere in this group — an
+        # unpaired-note fallback in ANY window must not re-move a reclaimed note
+        claimed = set(best_claim)
+
         for k in members:
             if k == ref:
                 continue
-            pairs = pair_deltas(wins[ref], wins[k])  # [(other_id, ref_off, delta)]
+            pairs = member_pairs[k]  # [(other_id, ref_off, delta)]
             cov = len(pairs) / max(len(wins[ref]), len(wins[k]))
             entry = {"window": k + 1, "reference_window": ref + 1,
                      "coverage": round(cov, 2), "applied": False}
@@ -939,6 +1020,20 @@ def repeat_align(events, beats_per_bar, grid=16):
             group_delta = {g: statistics.median(d for _, d in items)
                            for g, items in by_group.items()}
 
+            # Evidence gate (Fix NEW-3): auto-fix is only trustworthy when at
+            # least one beat-group actually TESTED local uniformity, i.e. had
+            # >=2 paired notes. A bar whose every group is a single pair (a
+            # sparse one-note-per-beat texture) offers zero within-group
+            # evidence, so any per-note delta pattern — even a maximally
+            # scattered, sign-alternating one — would otherwise sail through
+            # the vacuous uniformity gate and clone deliberate variation. If no
+            # group has >=2 pairs, refuse to apply and flag it.
+            if not any(len(items) >= 2 for items in by_group.values()):
+                entry["reason"] = ("insufficient uniformity evidence "
+                                   "(no beat-group has 2+ paired notes)")
+                report.append(entry)
+                continue
+
             # Gate 1: local uniformity, per estimable (>=2-pair) group. A
             # single-pair group is trivially uniform (residual 0 against its
             # own median) — this is what subsumes the old whole-bar
@@ -950,7 +1045,7 @@ def repeat_align(events, beats_per_bar, grid=16):
                 if len(items) < 2:
                     continue
                 resid = trimmed_residual([d for _, d in items], group_delta[g])
-                if resid > MAX_RESIDUAL_P90:
+                if resid > MAX_TRIMMED_RESID:
                     failing_beat = g
                     break
             if failing_beat is not None:
@@ -976,9 +1071,11 @@ def repeat_align(events, beats_per_bar, grid=16):
                 paired_ids.add(other_id)
             # Unpaired notes (no reference match) move with their own beat
             # neighbours: the group their OWN unshifted offset falls in, or
-            # 0 if that group has no estimable delta.
+            # 0 if that group has no estimable delta. Skip any note reclaimed by
+            # a paired match in this window OR an adjacent one (Fix NEW-1) — its
+            # correction is already assigned by the window it truly belongs to.
             for off, _, nid in wins[k]:
-                if nid in paired_ids:
+                if nid in paired_ids or nid in claimed:
                     continue
                 shift = group_delta.get(beat_group(off), 0.0)
                 deltas_by_id[nid] = Fraction(str(round(shift, 4)))
@@ -1154,9 +1251,6 @@ def cmd_quantize(args):
             else:
                 clusters.append([n])
         hand_clusters[name] = clusters
-
-    def cluster_onset(cl):
-        return cl[len(cl) // 2].start
 
     # Repeat-consistency alignment (spec 2026-07-17): a uniformly rushed
     # instance of a repeated bar is de-shifted BEFORE division selection and

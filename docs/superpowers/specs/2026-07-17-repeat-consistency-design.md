@@ -50,14 +50,36 @@ Windows *i*, *j* are a candidate pair when:
   across the window boundary still pairs), covers ≥ 85% of both windows'
   notes.
 
+**Cross-window candidate pool (Fix NEW-1).** `w = int(on // beats_per_bar)`
+hard-slices before pairing, so a note rushed *earlier* than its in-bar offset
+lands in the previous window (and one dragged late in the next); a ±0.45 search
+inside one hard-sliced window cannot reach it, and the whole match silently
+dissolves — no fix and no flag. So pairing draws its candidate pool for a window
+`k` from windows `{k-1, k, k+1}`, each note re-expressed in `k`'s frame at
+`offset_in_k = absolute_beat − k·beats_per_bar`, keeping those in
+`[−0.45, beats_per_bar + 0.45)`. Coverage denominators stay the **home** note
+counts, so a neighbour's fringe never inflates coverage; the widening is purely
+additive (no leak ⇒ pool = home window ⇒ pairing unchanged). A reclaimed fringe
+note is corrected by the window it truly belongs to. One fringe note can appear
+in two adjacent pools; the claim whose framed offset sits most inside the bar
+wins, and a paired ("claimed") note is never re-moved by any window's
+unpaired-note fallback, so no note is shifted twice.
+
 Candidate pairs chain into groups by union-find.
 
 ### 3. Reference selection and the auto-fix gate
 
-Per group, the **reference** is the instance with minimum mean distance from
-its onsets to the nearest `1/grid` slot, and it must itself be clean: mean
-slot error ≤ 0.05 beat. No clean instance → no auto-fix for the group (flag
-only).
+Per group, the **reference** is the group's most representative clean instance.
+For a 2-member group it is the instance with minimum mean distance from its
+onsets to the nearest `1/grid` slot (mean slot error). For a **group of ≥ 3
+(Fix NEW-2)** slot error alone is unsafe — it is mod-slot, so an instance
+dragged by exactly one grid slot (e.g. +0.25) reads as perfectly clean and can
+hijack the reference, rewriting the true majority onto the wrong slots. Instead
+pick the **consensus / most-central** instance: the member minimizing the sum
+over the others of `|median(pairwise onset deltas)|`, so two mutually-agreeing
+instances outvote one slot-aligned loner; ties (and the 2-member case) break by
+slot error. The chosen reference must still itself be clean: mean slot error
+≤ 0.05 beat. No clean instance → no auto-fix for the group (flag only).
 
 For each non-reference instance, estimate one constant shift
 `δ = median(paired onset deltas vs reference)`. Auto-fix applies **only when
@@ -69,6 +91,13 @@ all three gates hold**:
    pickup notes are placed differently) — it is genuinely one uniform
    rush, not free timing.
 3. pairing coverage ≥ 85% (from §2).
+4. **evidence (Fix NEW-3):** at least one beat-group actually *tested* local
+   uniformity, i.e. had ≥ 2 paired notes. A bar whose every beat-group is a
+   single pair (a sparse one-note-per-beat texture) offers zero within-group
+   evidence, so gate 2 is vacuous and any per-note delta pattern — even a
+   maximally scattered, sign-alternating one — would otherwise auto-apply,
+   cloning deliberate variation. With no ≥ 2-pair group, refuse and flag
+   `"insufficient uniformity evidence (no beat-group has 2+ paired notes)"`.
 
 Applying the fix subtracts δ from **all onsets in that window, both staves**
 (a rush is a phrase event — the Mirrors case shifted treble and bass
@@ -148,6 +177,10 @@ coverage ≥ 0.85, a clean reference). Then:
    genuinely scattered → flag `"non-uniform timing (beat N)"`, touch nothing.
 2. **Magnitude:** at least one group has `|δ_g| ≥ 0.10` beat. If none does, the
    rush is below the snap-changing threshold → no report entry (as in v1.0).
+3. **Evidence (Fix NEW-3):** at least one group must be non-trivial (≥ 2 pairs).
+   If *every* group is a single pair, gate 1 is vacuous and gate 2 alone would
+   clone an arbitrary scatter → flag `"insufficient uniformity evidence"`,
+   touch nothing. (See §3 gate 4.)
 
 **Applying.** Each paired note is shifted by `δ_g` of its reference partner's
 group. An *unpaired* note (no reference match) is shifted by `δ_g` of the group

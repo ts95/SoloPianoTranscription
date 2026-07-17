@@ -37,7 +37,7 @@ def test_uniform_rush_fixed():
 
 
 def test_variation_flagged_not_touched():
-    jitter = [0.0, 0.30, 0.05, 0.35, -0.10, 0.28]  # non-uniform: p90 >> 0.07
+    jitter = [0.0, 0.30, 0.05, 0.35, -0.10, 0.28]  # non-uniform: trimmed resid >> 0.07
     evs = (bar_events(0, start_id=0)
            + bar_events(1, jitter=jitter, extra=(2.75, 72), start_id=100)
            + bar_events(2, start_id=200))
@@ -114,6 +114,89 @@ def test_agogic_ramp_per_beat_fixed():
     print("ok: agogic ramp fixed with a descending per-beat-group shift")
 
 
+def test_sparse_texture_not_cloned():
+    """Fix A (evidence gate): a bar whose every beat-group is a single pair
+    (one note per beat) offers zero within-group uniformity evidence, so ANY
+    per-note delta pattern — even maximally scattered / sign-alternating —
+    would otherwise auto-apply, cloning deliberate variation. It must instead
+    be flagged 'insufficient uniformity evidence' and touch nothing."""
+    FIG = [(0.0, 60), (1.0, 64), (2.0, 67), (3.0, 72)]  # one note per beat
+
+    def sparse_bar(bar, jitter, start_id):
+        return [(start_id + k, bar * 4 + off + (jitter[k] if jitter else 0.0), p)
+                for k, (off, p) in enumerate(FIG)]
+
+    scatter = [+0.30, -0.28, +0.35, -0.20]  # each note its own beat-group
+    evs = (sparse_bar(0, None, start_id=0)
+           + sparse_bar(1, scatter, start_id=100)
+           + sparse_bar(2, None, start_id=200))
+    deltas, report = repeat_align(evs, 4)
+    assert not deltas, f"sparse scattered bar was cloned: {deltas}"
+    flagged = [e for e in report if not e.get("applied") and e["window"] == 2]
+    assert flagged, f"window 2 not flagged: {report}"
+    assert "insufficient uniformity evidence" in flagged[0].get("reason", ""), report
+    print("ok: sparse single-pair-group texture not auto-cloned")
+
+
+def test_consensus_reference_beats_slot_aligned_loner():
+    """Fix B (consensus reference): slot_err is mod-slot, so a bar dragged by
+    exactly one grid slot (+0.25) reads as perfectly clean (slot_err 0) and,
+    under the old min-slot_err rule, hijacked the reference — rewriting the
+    true clean majority onto the wrong slots. With >=3 members the reference
+    must be the most CENTRAL instance, so bars 1 and 3 outvote the loner."""
+    # small jitter, still clean; downbeat (offset-0.0) notes stay positive so
+    # they don't leak across the bar boundary (that is Fix C's concern, not B's)
+    jit1 = [0.03, 0.02, 0.02, -0.03, 0.02, -0.02]
+    jit3 = [0.02, 0.03, -0.03, 0.02, -0.02, 0.03]
+    evs = (bar_events(0, jitter=jit1, start_id=0)
+           + bar_events(1, shift=0.25, start_id=100)   # dragged exactly one slot
+           + bar_events(2, jitter=jit3, start_id=200))
+    deltas, report = repeat_align(evs, 4)
+    applied = [e for e in report if e.get("applied")]
+    assert applied, f"the dragged loner should be corrected: {report}"
+    # reference must be a clean bar (window 1 or 3), NEVER the slot-aligned loner
+    assert all(e["reference_window"] in (1, 3) for e in report), report
+    assert all(e["window"] == 2 for e in applied), applied
+    # the clean bars must not receive a -0.25 (or any) correction
+    loner_ids = {100 + k for k in range(len(FIGURE))}
+    assert set(deltas) <= loner_ids, (
+        f"clean bars 1/3 were wrongly corrected: {sorted(set(deltas) - loner_ids)}")
+    print("ok: consensus reference outvotes the slot-aligned loner")
+
+
+def test_rushed_early_downbeat_figure():
+    """Fix C (cross-window pairing): w = int(on // beats_per_bar) hard-slices
+    before pairing, so a note rushed EARLIER than its in-bar offset lands in
+    the PREVIOUS window. The rushed bar then looks short a note (count/coverage
+    anomaly) and, before the fix, silently dissolves — no fix AND no flag.
+
+    Branch asserted: FULL cross-window pairing — window 2 is applied with the
+    correct negative shift and its rushed-early first note (id 100) is in the
+    corrected deltas. (It must never return silently with no entry.)"""
+    # one note per beat 0; the whole figure recurs cleanly in bars 1 & 3.
+    FIG = [(0.0, 60), (1.0, 64), (1.5, 65), (2.0, 67), (3.0, 71), (3.5, 72)]
+
+    def cbar(bar, shift, start_id):
+        return [(start_id + k, bar * 4 + off + shift, p)
+                for k, (off, p) in enumerate(FIG)]
+
+    # bar 2 (index 1 -> window 2) rushed early 0.22: its downbeat (id 100)
+    # lands at absolute beat 3.78, hard-sliced into window 1.
+    evs = cbar(0, 0.0, 0) + cbar(1, -0.22, 100) + cbar(2, 0.0, 200)
+    deltas, report = repeat_align(evs, 4)
+    win2 = [e for e in report if e["window"] == 2]
+    assert win2, f"window 2 dissolved silently (boundary leak): {report}"
+    applied = [e for e in win2 if e.get("applied")]
+    assert applied, f"window 2 not applied: {report}"
+    sb = applied[0]["shift_beats"]
+    assert sb < -0.15, f"expected a negative (rushed-early) shift: {sb}"
+    assert 100 in deltas, (
+        f"the rushed-early downbeat (id 100) was not reclaimed/corrected: "
+        f"{sorted(deltas)}")
+    assert float(deltas[100]) < -0.15, f"downbeat shift wrong: {deltas[100]}"
+    print("ok: rushed-early downbeat reclaimed across the bar line (full pairing)")
+
+
 def test_quantize_engraves_repeats_identically():
     """End to end: bar 2 rushed 0.24 beat -> all three bars engrave the same."""
     PY, SCRIPT = sys.executable, os.path.join(
@@ -157,4 +240,7 @@ if __name__ == "__main__":
     test_subthreshold_untouched_unflagged()
     test_boundary_pickup_outlier_still_applied()
     test_agogic_ramp_per_beat_fixed()
+    test_sparse_texture_not_cloned()
+    test_consensus_reference_beats_slot_aligned_loner()
+    test_rushed_early_downbeat_figure()
     test_quantize_engraves_repeats_identically()
