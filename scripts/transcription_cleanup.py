@@ -2050,6 +2050,24 @@ def cmd_post(args):
                 j += 1
             if j > i:  # 2+ consecutive windows agree on the foreign key
                 lo_s, hi_s = wins[i][0], wins[j][0] + WIN
+                # Collection guard (WHY_MIDI_TO_SCORE §6.5): windowed key
+                # detection flip-flops on chord EMPHASIS inside the incumbent
+                # key (an Ab-heavy chorus in Eb reads as "Ab major"). Only a
+                # region whose notes actually LEAVE the incumbent collection
+                # is a modulation worth a key-signature change.
+                inc_pcs = {p.pitchClass for p in m21_key(args.key).pitches}
+                region = [n for n in m_notes if lo_s <= n.start < hi_s]
+                out_frac = (sum(1 for n in region
+                                if n.pitch % 12 not in inc_pcs)
+                            / max(1, len(region)))
+                if out_frac < 0.12:
+                    flags.append({"approx_start_s": round(lo_s, 1),
+                                  "approx_end_s": round(hi_s, 1),
+                                  "local_key": kname,
+                                  "skipped": f"emphasis, not modulation "
+                                             f"(out-of-key {out_frac:.2f})"})
+                    i = j + 1
+                    continue
                 lo_q, hi_q = to_q(lo_s), to_q(hi_s)
                 changes["respelled"] += respell_toward(kname, lo=lo_q, hi=hi_q)
                 # Engrave the modulation: a real key-signature change at the
@@ -2064,6 +2082,10 @@ def cmd_post(args):
                             m_hi = m
                     if m_lo is None or m_lo is m_hi:
                         continue  # sub-bar region: flag only
+                    # a region reaching the final measure ends WITH the piece:
+                    # restoring the global key on the last bar would be noise
+                    if m_hi is measures[-1]:
+                        m_hi = None
                     for m, key_name in ((m_lo, kname), (m_hi, args.key)):
                         if m is None:
                             continue

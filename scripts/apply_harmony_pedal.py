@@ -89,6 +89,16 @@ def main():
         split_measures=splits,
         time_sig_fn=lambda m: sigs.get(m, "4/4"))
 
+    # a measure with no notes in either staff has nothing to sustain —
+    # pedaling engraved silence is wrong (e.g. a pause before an outro)
+    empty = {m["number"] for m in measures
+             if not any(ev["type"] == "Chord"
+                        for st in m["staves"].values()
+                        for v in st["voices"].values()
+                        for ev in v)}
+    base_cfg = cfg
+    cfg = lambda mnum: [] if mnum in empty else base_cfg(mnum)
+
     add_pedals(args.mscz, cfg, staff_id=args.staff)
 
     if args.midi:
