@@ -796,10 +796,12 @@ def repeat_align(events, beats_per_bar, grid=16):
     """Repeat-consistency pre-snap alignment.
 
     A piece's own cleanly played repetitions are ground truth for its rushed
-    ones (spec: docs/superpowers/specs/2026-07-17-repeat-consistency-design.md).
-    Bar windows with matching pitch content whose onsets differ from the
-    group's cleanest instance by ONE uniform shift get that shift removed
-    before quantization; matches failing any evidence gate are reported but
+    ones (spec: docs/superpowers/specs/2026-07-17-repeat-consistency-design.md,
+    v1.1 "per-beat-group shift"). Bar windows with matching pitch content are
+    corrected against the group's cleanest instance with ONE shift PER BEAT
+    GROUP (an agogic ramp — push into the phrase, relax back — is common and
+    a single whole-bar shift both fails the uniformity gate and overshoots
+    the relaxed tail). Matches failing any evidence gate are reported but
     never touched, so deliberate variation survives.
 
     events: [(note_id, onset_beats, pitch)] for ALL notes, both hands.
@@ -828,24 +830,37 @@ def repeat_align(events, beats_per_bar, grid=16):
         return sum((ca & cb).values()) / union if union else 0.0
 
     def pair_deltas(ref, other):
-        """other-minus-ref onset delta per pitch-matched pair (greedy,
-        nearest within PAIR_WINDOW), walking the reference in time order."""
+        """Pitch-matched pairs of other vs ref (greedy, nearest within
+        PAIR_WINDOW, walking the reference in time order). Returns
+        [(other_note_id, ref_in_bar_offset, delta)] where delta = other
+        onset - ref onset; ref_in_bar_offset is the reference partner's
+        in-bar offset, used to bucket the pair into a beat-group."""
         by_pitch = defaultdict(list)
-        for i, (off, p, _) in enumerate(other):
-            by_pitch[p].append((off, i))
-        used, deltas = set(), []
+        for i, (off, p, nid) in enumerate(other):
+            by_pitch[p].append((off, i, nid))
+        used, pairs = set(), []
         for off, p, _ in sorted(ref):
             best = None
-            for off2, i in by_pitch.get(p, ()):
+            for off2, i, nid2 in by_pitch.get(p, ()):
                 if i in used:
                     continue
                 d = off2 - off
                 if abs(d) <= PAIR_WINDOW and (best is None or abs(d) < abs(best[0])):
-                    best = (d, i)
+                    best = (d, i, nid2)
             if best is not None:
                 used.add(best[1])
-                deltas.append(best[0])
-        return deltas
+                pairs.append((best[2], off, best[0]))
+        return pairs
+
+    def beat_group(off):
+        return min(max(int(off), 0), beats_per_bar - 1)
+
+    def trimmed_residual(deltas, center):
+        """Worst-15%-trimmed residual: sorted |delta - center|, keep the
+        top ~85% and report the largest surviving value."""
+        resid = sorted(abs(d - center) for d in deltas)
+        keep = max(1, int(round(0.85 * len(resid))))
+        return resid[keep - 1]
 
     def slot_err(win):
         return statistics.mean(
@@ -900,36 +915,76 @@ def repeat_align(events, beats_per_bar, grid=16):
         for k in members:
             if k == ref:
                 continue
-            ds = pair_deltas(wins[ref], wins[k])
-            cov = len(ds) / max(len(wins[ref]), len(wins[k]))
+            pairs = pair_deltas(wins[ref], wins[k])  # [(other_id, ref_off, delta)]
+            cov = len(pairs) / max(len(wins[ref]), len(wins[k]))
             entry = {"window": k + 1, "reference_window": ref + 1,
                      "coverage": round(cov, 2), "applied": False}
             if cov < COVERAGE:
                 entry["reason"] = "pairing coverage below 0.85"
                 report.append(entry)
                 continue
-            delta = statistics.median(ds)
-            if abs(delta) < MIN_SHIFT:
-                continue  # snap already agrees — silently leave alone
-            entry["shift_beats"] = round(delta, 3)
-            # Uniformity test on a TRIMMED residual: drop the worst ~15% of
-            # paired residuals first, so a uniformly-rushed figure body with a
-            # couple of differently-placed boundary pickup notes (anticipations
-            # into the next bar) still qualifies. Genuinely non-uniform bars
-            # stay rejected — their residuals don't separate into a tight body
-            # plus a few outliers.
-            resid = sorted(abs(d - delta) for d in ds)
-            keep = max(1, int(round(0.85 * len(resid))))
-            trimmed_resid = resid[keep - 1]
             if ternaryish(wins[ref]) or ternaryish(wins[k]):
                 entry["reason"] = "tuplet window (auto-fix exempt in v1)"
-            elif trimmed_resid > MAX_RESIDUAL_P90:
-                entry["reason"] = f"non-uniform timing (residual {trimmed_resid:.2f})"
-            else:
-                entry["applied"] = True
-                d = Fraction(str(round(delta, 4)))
-                for _, _, nid in wins[k]:
-                    deltas_by_id[nid] = d
+                report.append(entry)
+                continue
+
+            # Per-beat-group shift (v1.1): an agogic ramp — push into the
+            # phrase, relax back to tempo — is common and a single whole-bar
+            # delta both fails the uniformity gate and overshoots the
+            # relaxed tail. Bucket paired deltas by the reference partner's
+            # beat (int(in-bar offset), clamped), one delta per group.
+            by_group = defaultdict(list)  # g -> [(other_id, delta)]
+            for other_id, ref_off, delta in pairs:
+                by_group[beat_group(ref_off)].append((other_id, delta))
+            group_delta = {g: statistics.median(d for _, d in items)
+                           for g, items in by_group.items()}
+
+            # Gate 1: local uniformity, per estimable (>=2-pair) group. A
+            # single-pair group is trivially uniform (residual 0 against its
+            # own median) — this is what subsumes the old whole-bar
+            # boundary-trim: a differently-placed pickup note just lands in
+            # its own beat-group and gets that group's shift.
+            failing_beat = None
+            for g in sorted(by_group):
+                items = by_group[g]
+                if len(items) < 2:
+                    continue
+                resid = trimmed_residual([d for _, d in items], group_delta[g])
+                if resid > MAX_RESIDUAL_P90:
+                    failing_beat = g
+                    break
+            if failing_beat is not None:
+                entry["reason"] = f"non-uniform timing (beat {failing_beat + 1})"
+                report.append(entry)
+                continue
+
+            # Gate 2: magnitude — at least one group's shift must be large
+            # enough to change the snap, else the rush is already sub-
+            # threshold and this window is left alone silently (no entry).
+            if not any(abs(d) >= MIN_SHIFT for d in group_delta.values()):
+                continue
+
+            entry["applied"] = True
+            entry["shift_beats_by_beat"] = [
+                round(group_delta.get(g, 0.0), 3) for g in range(beats_per_bar)]
+
+            applied_shifts, paired_ids = [], set()
+            for other_id, ref_off, delta in pairs:
+                shift = group_delta[beat_group(ref_off)]
+                deltas_by_id[other_id] = Fraction(str(round(shift, 4)))
+                applied_shifts.append(shift)
+                paired_ids.add(other_id)
+            # Unpaired notes (no reference match) move with their own beat
+            # neighbours: the group their OWN unshifted offset falls in, or
+            # 0 if that group has no estimable delta.
+            for off, _, nid in wins[k]:
+                if nid in paired_ids:
+                    continue
+                shift = group_delta.get(beat_group(off), 0.0)
+                deltas_by_id[nid] = Fraction(str(round(shift, 4)))
+                applied_shifts.append(shift)
+
+            entry["shift_beats"] = round(statistics.median(applied_shifts), 3)
             report.append(entry)
     return deltas_by_id, report
 

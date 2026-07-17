@@ -72,6 +72,48 @@ def test_boundary_pickup_outlier_still_applied():
     print("ok: boundary pickup outlier trimmed; uniform body still auto-applied")
 
 
+def test_agogic_ramp_per_beat_fixed():
+    """Per-beat-group shift (v1.1): bar 2 is rushed with a RAMP, not a
+    uniform shift — front beats pushed harder (~0.23), later beats less
+    (~0.13, ~0.03), mirroring the measured Mirrors bar 2 (per-beat deltas
+    -0.231/-0.223/-0.132/-0.028). A whole-bar median both fails the
+    uniformity gate and overshoots the relaxed tail; a per-beat-group shift
+    should apply cleanly with a descending-magnitude shift list."""
+    # >=2 notes per beat so each beat-group's median is well-defined.
+    RAMP_FIGURE = [
+        (0.0, 60), (0.1, 62),   # beat 0
+        (1.0, 64), (1.2, 65),   # beat 1
+        (2.0, 67), (2.3, 69),   # beat 2
+        (3.0, 71), (3.5, 72),   # beat 3
+    ]
+    RAMP = [0.23, 0.22, 0.13, 0.03]  # per-beat shift applied to bar 1 only
+
+    def ramp_bar_events(bar, shifts, start_id):
+        evs = []
+        for k, (off, p) in enumerate(RAMP_FIGURE):
+            g = int(off)
+            evs.append((start_id + k, bar * 4 + off + shifts[g], p))
+        return evs
+
+    zero = [0.0, 0.0, 0.0, 0.0]
+    evs = (ramp_bar_events(0, zero, start_id=0)
+           + ramp_bar_events(1, RAMP, start_id=100)
+           + ramp_bar_events(2, zero, start_id=200))
+    deltas, report = repeat_align(evs, 4)
+    applied = [e for e in report if e.get("applied") and e["window"] == 2]
+    assert applied, f"agogic ramp should auto-apply per beat-group: {report}"
+    sb = applied[0]["shift_beats_by_beat"]
+    assert len(sb) == 4, sb
+    assert all(sb[i] >= sb[i + 1] for i in range(len(sb) - 1)), (
+        f"expected descending-magnitude ramp: {sb}")
+    assert sb[0] > 0.15 and sb[-1] < 0.10, f"ramp endpoints off: {sb}"
+    ramped_ids = {100 + k for k in range(len(RAMP_FIGURE))}
+    assert ramped_ids <= set(deltas), (
+        f"every window-2 note id should be in deltas: missing "
+        f"{ramped_ids - set(deltas)}")
+    print("ok: agogic ramp fixed with a descending per-beat-group shift")
+
+
 def test_quantize_engraves_repeats_identically():
     """End to end: bar 2 rushed 0.24 beat -> all three bars engrave the same."""
     PY, SCRIPT = sys.executable, os.path.join(
@@ -114,4 +156,5 @@ if __name__ == "__main__":
     test_variation_flagged_not_touched()
     test_subthreshold_untouched_unflagged()
     test_boundary_pickup_outlier_still_applied()
+    test_agogic_ramp_per_beat_fixed()
     test_quantize_engraves_repeats_identically()
