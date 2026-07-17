@@ -792,6 +792,141 @@ def infer_bar_phase(events, beats_per_bar):
     return best, round(conf, 2), breakdown
 
 
+def repeat_align(events, beats_per_bar, grid=16):
+    """Repeat-consistency pre-snap alignment.
+
+    A piece's own cleanly played repetitions are ground truth for its rushed
+    ones (spec: docs/superpowers/specs/2026-07-17-repeat-consistency-design.md).
+    Bar windows with matching pitch content whose onsets differ from the
+    group's cleanest instance by ONE uniform shift get that shift removed
+    before quantization; matches failing any evidence gate are reported but
+    never touched, so deliberate variation survives.
+
+    events: [(note_id, onset_beats, pitch)] for ALL notes, both hands.
+    Returns (deltas {note_id: Fraction beats to subtract}, report [dict]).
+    """
+    import statistics
+    from collections import Counter, defaultdict
+    from fractions import Fraction
+
+    MIN_NOTES, JACCARD, PAIR_WINDOW = 4, 0.8, 0.45
+    COVERAGE, REF_CLEAN, MIN_SHIFT, MAX_RESIDUAL_P90 = 0.85, 0.05, 0.10, 0.07
+
+    if not beats_per_bar or beats_per_bar < 2:
+        return {}, []
+    slot = 4.0 / grid
+
+    wins = defaultdict(list)  # window -> [(in-bar onset, pitch, note_id)]
+    for nid, on, pitch in events:
+        w = int(on // beats_per_bar)
+        wins[w].append((on - w * beats_per_bar, pitch, nid))
+    keys = [k for k in sorted(wins) if len(wins[k]) >= MIN_NOTES]
+
+    def multiset_jaccard(wa, wb):
+        ca = Counter(p for _, p, _ in wa)
+        cb = Counter(p for _, p, _ in wb)
+        union = sum((ca | cb).values())
+        return sum((ca & cb).values()) / union if union else 0.0
+
+    def pair_deltas(ref, other):
+        """other-minus-ref onset delta per pitch-matched pair (greedy,
+        nearest within PAIR_WINDOW), walking the reference in time order."""
+        by_pitch = defaultdict(list)
+        for i, (off, p, _) in enumerate(other):
+            by_pitch[p].append((off, i))
+        used, deltas = set(), []
+        for off, p, _ in sorted(ref):
+            best = None
+            for off2, i in by_pitch.get(p, ()):
+                if i in used:
+                    continue
+                d = off2 - off
+                if abs(d) <= PAIR_WINDOW and (best is None or abs(d) < abs(best[0])):
+                    best = (d, i)
+            if best is not None:
+                used.add(best[1])
+                deltas.append(best[0])
+        return deltas
+
+    def slot_err(win):
+        return statistics.mean(
+            abs(off - round(off / slot) * slot) for off, _, _ in win)
+
+    def ternaryish(win):
+        def err(div):
+            unit = 1.0 / div
+            return statistics.mean(
+                abs(off - round(off / unit) * unit) for off, _, _ in win)
+        return err(3) < err(4)
+
+    parent = {k: k for k in keys}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for ai in range(len(keys)):
+        for bi in range(ai + 1, len(keys)):
+            a, b = keys[ai], keys[bi]
+            wa, wb = wins[a], wins[b]
+            # note counts within ~10% (rounded, so a lone extra/missing note
+            # in a small window doesn't spuriously block matching)
+            count_tol = max(1, round(0.1 * max(len(wa), len(wb))))
+            if abs(len(wa) - len(wb)) > count_tol:
+                continue
+            if multiset_jaccard(wa, wb) < JACCARD:
+                continue
+            ds = pair_deltas(wa, wb)
+            if len(ds) / max(len(wa), len(wb)) < COVERAGE:
+                continue
+            parent[find(a)] = find(b)
+
+    groups = defaultdict(list)
+    for k in keys:
+        groups[find(k)].append(k)
+
+    deltas_by_id, report = {}, []
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        ref = min(members, key=lambda k: slot_err(wins[k]))
+        if slot_err(wins[ref]) > REF_CLEAN:
+            report.extend({"window": k + 1, "reference_window": ref + 1,
+                           "applied": False, "reason": "no clean reference"}
+                          for k in members if k != ref)
+            continue
+        for k in members:
+            if k == ref:
+                continue
+            ds = pair_deltas(wins[ref], wins[k])
+            cov = len(ds) / max(len(wins[ref]), len(wins[k]))
+            entry = {"window": k + 1, "reference_window": ref + 1,
+                     "coverage": round(cov, 2), "applied": False}
+            if cov < COVERAGE:
+                entry["reason"] = "pairing coverage below 0.85"
+                report.append(entry)
+                continue
+            delta = statistics.median(ds)
+            if abs(delta) < MIN_SHIFT:
+                continue  # snap already agrees — silently leave alone
+            entry["shift_beats"] = round(delta, 3)
+            resid = sorted(abs(d - delta) for d in ds)
+            p90 = resid[min(len(resid) - 1, int(0.9 * len(resid)))]
+            if ternaryish(wins[ref]) or ternaryish(wins[k]):
+                entry["reason"] = "tuplet window (auto-fix exempt in v1)"
+            elif p90 > MAX_RESIDUAL_P90:
+                entry["reason"] = f"non-uniform timing (residual p90 {p90:.2f})"
+            else:
+                entry["applied"] = True
+                d = Fraction(str(round(delta, 4)))
+                for _, _, nid in wins[k]:
+                    deltas_by_id[nid] = d
+            report.append(entry)
+    return deltas_by_id, report
+
+
 def cmd_quantize(args):
     """MIDI -> MusicXML quantized with music21 — never MuseScore's MIDI import
     (it auto-detects its own tempo, ignores the meta events, and can lock onto
