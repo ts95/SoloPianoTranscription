@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **Model floor (user requirement):** every subagent dispatched for this plan runs on **Sonnet 5 (`claude-sonnet-5`) or stronger — never Haiku**. The tasks involve musical-domain judgment and surgical edits inside a 2000+ line quantizer; pass `model: "sonnet"` (or stronger) explicitly on every Agent dispatch, including review subagents.
+> **Model assignments (user requirement):** implementer subagents run **Sonnet 5 (`claude-sonnet-5`) or stronger — never Haiku**; per-task review subagents run **Opus** (`model: "opus"`); the final end-to-end review runs on **Fable** (the session model / `model: "fable"`). Pass the model explicitly on every Agent dispatch.
 
 **Goal:** Quantize detects bars that repeat a figure and removes a uniform rush/drag from unclean instances before snapping, so repeated phrases engrave with identical rhythms; verify flags rhythm-divergent repeat pairs it didn't fix.
 
