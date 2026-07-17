@@ -118,8 +118,62 @@ Live acceptance: re-run the Mirrors stage-3 chain from `cleaned.mid` and
 assert bars 2 and 4 engrave identically with no hand edit; visually inspect
 page 1 and re-run `verify` (median must not regress from 0.983).
 
+## v1.1 — per-beat-group shift (supersedes the whole-bar shift)
+
+**Motivation (measured on Mirrors bar 2).** The rush of a repeated bar is often
+not one constant offset but an *agogic ramp*: the player pushes into the phrase
+and relaxes back to tempo across the bar. Bar 2 vs bar 4 (its matched
+reference) has per-beat median deltas −0.231 / −0.223 / −0.132 / −0.028 —
+smooth, and *locally uniform within each beat*, but with a whole-bar spread the
+uniformity gate (correctly) rejects. A single per-bar shift also overshoots the
+relaxed tail (one note spills into the next bar). One shift **per beat-group**
+lands all 14/14 notes on the reference's exact grid slots.
+
+This replaces §3's single δ. A perfectly uniform rush is the special case where
+every group's δ is equal, so v1.0 behavior is preserved; the v1.0 boundary-trim
+(worst-15%) is subsumed — a differently-placed pickup note simply belongs to
+its own beat-group and gets that group's shift.
+
+**Beat-group assignment.** Each paired note belongs to beat-group
+`g = int(reference-partner in-bar offset)`, clamped to `[0, beats_per_bar-1]`.
+`δ_g = median(paired deltas whose reference offset is in g)`. A group is
+*estimable* if it has ≥1 pair.
+
+**Gating** (all bar-level gates from §2/§3 still apply first: pitch match,
+coverage ≥ 0.85, a clean reference). Then:
+
+1. **Local uniformity, per group:** every estimable group with ≥2 pairs must
+   have worst-15%-trimmed residual (its deltas minus `δ_g`) ≤ 0.07 beat.
+   Single-pair groups are trivially uniform. If any group fails → the bar is
+   genuinely scattered → flag `"non-uniform timing (beat N)"`, touch nothing.
+2. **Magnitude:** at least one group has `|δ_g| ≥ 0.10` beat. If none does, the
+   rush is below the snap-changing threshold → no report entry (as in v1.0).
+
+**Applying.** Each paired note is shifted by `δ_g` of its reference partner's
+group. An *unpaired* note (no reference match) is shifted by `δ_g` of the group
+its own unshifted offset falls in, or 0 if that group is not estimable — so a
+note moves consistently with its beat neighbours. Groups with no estimable δ
+contribute 0.
+
+**Boundary safety.** Adjacent notes across a beat boundary can receive
+different shifts; because both are aligned toward the reference's own valid slot
+ordering and every downstream measure is grid-snapped and balance-linted, a
+reordering would surface as an unbalanced measure. No explicit clamp in v1.1;
+revisit if a real piece trips the lint.
+
+**Reporting.** An applied entry gains `shift_beats_by_beat: [δ_0, δ_1, …]`;
+`shift_beats` stays (now the median of the applied per-note shifts) for
+at-a-glance reading.
+
+**Acceptance.** Mirrors bars 2 and 4 engrave identically straight from the
+pipeline (no hand edit); the existing five `test_repeat_align.py` cases still
+pass (uniform rush, variation-flagged, sub-threshold, boundary-pickup,
+coverage) plus a new per-beat-ramp case.
+
 ## Out of scope (v2 candidates)
 
 - Sub-bar and transposed figure matching.
 - Consensus-template re-engraving (majority rhythm across a group).
 - Tuplet-beat auto-fix.
+- Continuous (linear-fit) ramp instead of a per-beat step — only if a real
+  piece shows within-beat ramps the step model can't seat.
