@@ -1674,15 +1674,22 @@ def cmd_verify(args):
     parts = list(score.parts)
     n_bars = max(len(p.getElementsByClass("Measure")) for p in parts)
     bar_pitch_sets = []
+    # engraved in-bar onset pattern (both staves merged, 1/8-beat resolution,
+    # tie continuations excluded) — for the rhythm repeat cross-check
+    bar_onset_patterns = []
     for k in range(1, n_bars + 1):
         pcs = set()
+        onsets = set()
         for p in parts:
             m = p.measure(k)
             if m is not None:
                 for n in m.recurse().notes:
                     for pt in (n.pitches if hasattr(n, "pitches") else [n.pitch]):
                         pcs.add(pt.midi)
+                    if n.tie is None or n.tie.type == "start":
+                        onsets.add(round(float(n.offset) * 8) / 8)
         bar_pitch_sets.append(pcs)
+        bar_onset_patterns.append(tuple(sorted(onsets)))
 
     with tempfile.TemporaryDirectory() as td:
         # mp3, not wav: mscore's wav export can fail (exit 51) in environments
@@ -1750,11 +1757,26 @@ def cmd_verify(args):
             jac = len(si & sj) / len(si | sj) if (si | sj) else 1.0
             if jac < 0.6:
                 repeat_flags.append({
+                    "kind": "pitch",
                     "bars": [bars[i]["bar"], bars[j]["bar"]],
                     "audio_similarity": round(float(vi @ vj / denom), 3),
                     "pitch_class_overlap": round(jac, 2),
                     "hint": "audio repeats but the transcribed pitch content differs — "
                             "one of the two bars is probably wrong"})
+            if jac >= 0.6:
+                pi_ = bar_onset_patterns[bars[i]["bar"] - 1]
+                pj_ = bar_onset_patterns[bars[j]["bar"] - 1]
+                if pi_ and pj_ and pi_ != pj_:
+                    repeat_flags.append({
+                        "kind": "rhythm",
+                        "bars": [bars[i]["bar"], bars[j]["bar"]],
+                        "audio_similarity": round(float(vi @ vj / denom), 3),
+                        "rhythms": [" ".join(str(x) for x in pi_),
+                                    " ".join(str(x) for x in pj_)],
+                        "hint": "audio repeats and pitches agree but the engraved "
+                                "rhythms differ — align to the cleaner instance "
+                                "by ear (quantize's repeat alignment declined "
+                                "or missed this pair)"})
     repeat_flags = repeat_flags[:15]
 
     for b in bars:
