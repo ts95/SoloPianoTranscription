@@ -112,6 +112,169 @@ def cmd_diagnose(args):
     return 0
 
 
+def _snap_downbeat(beats, t, side):
+    """Index of the base-grid downbeat (idx % 4 == 0) nearest t, biased
+    before (side='start') or after (side='end')."""
+    import bisect
+    i = bisect.bisect_left(beats, t)
+    cands = [j for j in range(max(0, i - 4), min(len(beats), i + 5))
+             if j % 4 == 0]
+    if not cands:
+        raise SystemExit(f"repair: no downbeat near t={t}")
+    if side == "start":
+        before = [j for j in cands if beats[j] <= t + 1e-6]
+        return before[-1] if before else cands[0]
+    after = [j for j in cands if beats[j] >= t - 1e-6]
+    return after[0] if after else cands[-1]
+
+
+def _fit_region(ons, beats, t0, t1):
+    import bisect
+    seg = [t for t in ons if t0 <= t < t1]
+    if not seg:
+        return None
+    n = 0
+    for t in seg:
+        i = bisect.bisect_right(beats, t) - 1
+        i = max(0, min(i, len(beats) - 2))
+        frac = i + (t - beats[i]) / (beats[i + 1] - beats[i])
+        f = frac - int(frac)
+        n += abs(f - round(f * 4) / 4) <= 0.07
+    return round(n / len(seg), 3)
+
+
+def repair(plan_path):
+    plan_dir = os.path.dirname(os.path.abspath(plan_path))
+    plan = json.load(open(plan_path))
+    rel = lambda p: os.path.join(plan_dir, p)
+    base = json.load(open(rel(plan["base"])))
+    beats = list(base["beats"])
+    ons = _onsets(rel(plan["midi"]), plan["midi_shift"])
+    t_end_all = ons[-1] + 0.6
+
+    spans = []
+    for r in plan["repairs"]:
+        lo = r["span_s"][0]
+        hi = t_end_all if r["span_s"][1] == "end" else r["span_s"][1]
+        spans.append((lo, hi, r))
+    spans.sort()
+    for (a0, a1, _), (b0, b1, _) in zip(spans, spans[1:]):
+        if b0 < a1 - 1e-6:
+            raise SystemExit(f"repair: overlapping spans {a1} > {b0}")
+
+    before = grid_fit_probe(rel(plan["midi"]), beats, plan["midi_shift"])
+    region_before = {}
+
+    for lo, hi, r in reversed(spans):        # right-to-left keeps left indices
+        i0 = _snap_downbeat(beats, lo, "start")
+        open_end = r["span_s"][1] == "end"
+        i1 = len(beats) - 1 if open_end else _snap_downbeat(beats, hi, "end")
+        t0, t1 = beats[i0], (t_end_all if open_end else beats[i1])
+        region_before[f"{round(t0, 2)}-{round(t1, 2)}"] = _fit_region(
+            ons, beats, t0, t1)
+
+        if r["op"] == "splice":
+            src = json.load(open(rel(r["source"])))["beats"]
+            seg = [t for t in src if t0 + 1e-6 < t < t1 - 1e-6]
+            while (len(seg) + 1) % 4 != 0:
+                seg = seg[:-1]
+            new_seg = seg
+        elif r["op"] == "lattice":
+            pieces = r.get("pieces") or [["end", r["period"]]]
+            g = [t0]
+            for lim, p in pieces:
+                stop = t1 if lim == "end" else min(float(lim), t1)
+                while g[-1] + p < stop - 1e-6:
+                    g.append(g[-1] + p)
+            if not open_end:
+                n = len(g)                    # beats strictly inside + anchor
+                want = ((n + 2) // 4) * 4 - 1  # interior count ≡ 3 (mod 4)
+                p_last = pieces[-1][1]
+                while len(g) - 1 < want:
+                    g.append(g[-1] + p_last)
+                while len(g) - 1 > want and len(g) > 2:
+                    g.pop()
+                span = t1 - t0
+                scale = span / (g[-1] + p_last - t0)
+                g = [t0 + (x - t0) * scale for x in g]
+            new_seg = nudge_beats_to_onsets(
+                g + ([] if open_end else [t1]), ons,
+                pin_start=True, pin_end=not open_end)
+            new_seg = new_seg[1:] if open_end else new_seg[1:-1]
+        elif r["op"] == "tail":
+            clusters = []
+            for t in [x for x in ons if x >= t0 - 0.1]:
+                if clusters and t - clusters[-1][-1] < 0.05:
+                    clusters[-1].append(t)
+                else:
+                    clusters.append([t])
+            ctimes = [c[0] for c in clusters]
+            new_seg, b = [], t0
+            while b < t_end_all:
+                win = [ctimes[i + 1] - ctimes[i]
+                       for i in range(len(ctimes) - 1)
+                       if b - 0.3 <= ctimes[i] <= b + 1.8
+                       and ctimes[i + 1] - ctimes[i] < 0.6]
+                p16 = statistics.median(win) if win else 0.3
+                nxt = b + 4 * p16
+                near = min(ctimes, key=lambda c: abs(c - nxt)) if ctimes else nxt
+                if abs(near - nxt) <= 0.12:
+                    nxt = near
+                new_seg.append(round(nxt, 4))
+                b = nxt
+        else:
+            raise SystemExit(f"repair: unknown op {r['op']!r}")
+
+        tail = [] if open_end else beats[i1:]
+        beats = beats[:i0 + 1] + [round(float(x), 4) for x in new_seg] + tail
+
+    if not all(y > x for x, y in zip(beats, beats[1:])):
+        raise SystemExit("repair: non-monotonic result")
+
+    after = grid_fit_probe(rel(plan["midi"]), beats, plan["midi_shift"])
+    # untouched-region regression guard (compare complement of spans)
+    span_ts = [(lo, hi) for lo, hi, _ in spans]
+    edges = [beats[0]] + [t for pair in span_ts for t in pair] + [beats[-1]]
+    for j in range(0, len(edges) - 1, 2):
+        t0, t1 = edges[j], edges[j + 1]
+        if t1 - t0 < 2.0:
+            continue
+        fb = _fit_region(ons, base["beats"], t0, t1)
+        fa = _fit_region(ons, beats, t0, t1)
+        if fb and fa and fa < fb - 0.02:
+            raise SystemExit(
+                f"repair: fit regression in untouched region "
+                f"[{t0:.1f},{t1:.1f}] {fb} -> {fa}")
+    if after["onset_grid_fit"] < before["onset_grid_fit"] - 0.005:
+        raise SystemExit(
+            f"repair: global fit regressed "
+            f"{before['onset_grid_fit']} -> {after['onset_grid_fit']}")
+
+    out = dict(base)
+    out["beats"] = beats
+    out["n_beats"] = len(beats)
+    out["source"] = f"grid_surgery repair: {os.path.basename(plan_path)}"
+    per = [b - a for a, b in zip(beats, beats[1:])]
+    out["tempo_median_bpm"] = round(60 / statistics.median(per), 1)
+    out["beat_period_cv"] = round(statistics.pstdev(per) / statistics.mean(per), 3)
+    out.update(after)
+    with open(rel(plan["output"]), "w") as f:
+        json.dump(out, f, indent=2)
+    report = {"before": {k: before[k] for k in
+                         ("onset_grid_fit", "subdivision_fit")},
+              "after": {k: after[k] for k in
+                        ("onset_grid_fit", "subdivision_fit")},
+              "regions_before": region_before,
+              "output": plan["output"]}
+    print(json.dumps(report, indent=2))
+    return report
+
+
+def cmd_repair(args):
+    repair(args.plan)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(required=True)
@@ -121,6 +284,9 @@ def main():
     d.add_argument("--midi-shift", type=float, default=0.0)
     d.add_argument("--output")
     d.set_defaults(fn=cmd_diagnose)
+    r = sub.add_parser("repair")
+    r.add_argument("plan")
+    r.set_defaults(fn=cmd_repair)
     args = ap.parse_args()
     sys.exit(args.fn(args))
 
