@@ -821,7 +821,9 @@ def repeat_align(events, beats_per_bar, grid=16):
     never touched, so deliberate variation survives.
 
     events: [(note_id, onset_beats, pitch)] for ALL notes, both hands.
-    Returns (deltas {note_id: Fraction beats to subtract}, report [dict]).
+    Returns (deltas {note_id: Fraction beats to subtract}, report [dict],
+    group_map {window: [sibling windows incl. self]} for repeat windows
+    with >=2 members).
     """
     from collections import Counter, defaultdict
     from fractions import Fraction
@@ -830,7 +832,7 @@ def repeat_align(events, beats_per_bar, grid=16):
     COVERAGE, REF_CLEAN, MIN_SHIFT, MAX_TRIMMED_RESID = 0.85, 0.05, 0.10, 0.07
 
     if not beats_per_bar or beats_per_bar < 2:
-        return {}, []
+        return {}, [], {}
     slot = 4.0 / grid
 
     wins = defaultdict(list)  # window -> [(in-bar onset, pitch, note_id)]
@@ -1113,7 +1115,12 @@ def repeat_align(events, beats_per_bar, grid=16):
 
             entry["shift_beats"] = round(statistics.median(applied_shifts), 3)
             report.append(entry)
-    return deltas_by_id, report
+    group_map = {}
+    for members in groups.values():
+        if len(members) >= 2:
+            for k in members:
+                group_map[k] = list(members)
+    return deltas_by_id, report, group_map
 
 
 def ioi_reseat(onsets, snapped, grid):
@@ -1354,14 +1361,28 @@ def cmd_quantize(args):
     # instance of a repeated bar is de-shifted BEFORE division selection and
     # snapping, using the group's cleanest instance as reference. Onsets are
     # rebased by align_phase so windows coincide with the engraved bars.
-    rep_deltas, rep_report = {}, []
+    rep_deltas, rep_report, rep_groups = {}, [], {}
     if not args.no_repeat_align:
-        rep_deltas, rep_report = repeat_align(
+        rep_deltas, rep_report, rep_groups = repeat_align(
             [(id(n), float(to_ql(n.start)) - align_phase, n.pitch)
              for n in notes],
             beats_per_bar, args.grid)
     if rep_report:
         summary["repeat_alignment"] = rep_report
+
+    # Chord-brush ghost drop (Task 7): windows -> in-bar (offset, pitch, id)
+    # tuples, built once from the same rebased events repeat_align consumes,
+    # so the family-voicing exception below can check a sibling repeat
+    # window for the same pitch at the same in-bar slot without recomputing
+    # per note.
+    wins_cache = {}
+    for nid, on, pitch in [(id(n), float(to_ql(n.start)) - align_phase,
+                            n.pitch) for n in notes]:
+        if beats_per_bar:
+            w = int(on // beats_per_bar)
+            wins_cache.setdefault(w, []).append(
+                (on - w * beats_per_bar, pitch, nid))
+    brush_dropped, brush_bars = 0, set()
 
     def n_on(n):
         return to_ql(n.start) - rep_deltas.get(id(n), 0)
@@ -1566,6 +1587,39 @@ def cmd_quantize(args):
             group = slots[off]
             raw_dur = max(n_end(n) - off for n in group)
             cap = onsets[i + 1] - off if i + 1 < len(onsets) else raw_dur
+            # Chord-brush ghost drop (Task 7): a very short, low-velocity note
+            # swept inside a chord (dur < 55 ms AND vel < 0.75x the chord's
+            # max velocity) is transcription noise, not a chord tone --
+            # EXCEPT the family-voicing exception: the same pitch at the same
+            # in-bar slot in a sibling repeat window means it was intended
+            # (a brushed voicing, not noise).
+            if len(group) > 1:
+                vmax = max(n.velocity for n in group)
+                keep = []
+                for n in group:
+                    brush = ((n.end - n.start) < 0.055
+                             and n.velocity < 0.75 * vmax)
+                    if brush and beats_per_bar:
+                        w = int((float(n_on(n)) - align_phase) // beats_per_bar)
+                        slot_off = round(float(n_on(n) - align_phase)
+                                         % beats_per_bar, 2)
+                        for sib in rep_groups.get(w, []):
+                            if sib == w:
+                                continue
+                            hits = wins_cache.get(sib, [])
+                            if any(p == n.pitch
+                                   and abs(round(o, 2) - slot_off) < 0.13
+                                   for o, p, _ in hits):
+                                brush = False
+                                break
+                    if brush:
+                        brush_dropped += 1
+                        brush_bars.add(int(float(n_on(n))) // beats_per_bar + 1
+                                       if beats_per_bar else 0)
+                    else:
+                        keep.append(n)
+                if keep:
+                    group = keep
             pitches = sorted({n.pitch for n in group})
             dur = min(raw_dur, cap)
             last = i + 1 >= len(onsets)
@@ -1709,6 +1763,10 @@ def cmd_quantize(args):
                                    "rest_absorbing_tie_fills": tie_filled,
                                    "sustained_as_second_voice": sustained,
                                    "rolled_chords_arpeggiated": arpeggiated}
+
+    if brush_dropped:
+        summary["chord_brush_dropped"] = {"count": brush_dropped,
+                                          "bars": sorted(brush_bars)}
 
     pad_parts_equal(score, ts_str)
 

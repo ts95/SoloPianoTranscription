@@ -26,7 +26,7 @@ def test_uniform_rush_fixed():
     evs = (bar_events(0, start_id=0)
            + bar_events(1, shift=0.24, start_id=100)
            + bar_events(2, start_id=200))
-    deltas, report = repeat_align(evs, 4)
+    deltas, report, _ = repeat_align(evs, 4)
     rushed_ids = {100 + k for k in range(len(FIGURE))}
     assert set(deltas) == rushed_ids, f"wrong notes corrected: {sorted(deltas)}"
     assert all(abs(float(d) - 0.24) < 0.02 for d in deltas.values()), deltas
@@ -41,7 +41,7 @@ def test_variation_flagged_not_touched():
     evs = (bar_events(0, start_id=0)
            + bar_events(1, jitter=jitter, extra=(2.75, 72), start_id=100)
            + bar_events(2, start_id=200))
-    deltas, report = repeat_align(evs, 4)
+    deltas, report, _ = repeat_align(evs, 4)
     assert not deltas, f"variation was modified: {deltas}"
     flagged = [e for e in report if not e.get("applied") and e["window"] == 2]
     assert flagged and "reason" in flagged[0], report
@@ -52,7 +52,7 @@ def test_subthreshold_untouched_unflagged():
     evs = (bar_events(0, start_id=0)
            + bar_events(1, shift=0.05, start_id=100)
            + bar_events(2, start_id=200))
-    deltas, report = repeat_align(evs, 4)
+    deltas, report, _ = repeat_align(evs, 4)
     assert not deltas, deltas
     assert not [e for e in report if e["window"] == 2], (
         f"sub-threshold shift should not even be flagged: {report}")
@@ -65,7 +65,7 @@ def test_boundary_pickup_outlier_still_applied():
     evs = (bar_events(0, start_id=0)
            + bar_events(1, shift=0.24, jitter=[0, 0, 0, 0, 0, -0.13], start_id=100)
            + bar_events(2, start_id=200))
-    deltas, report = repeat_align(evs, 4)
+    deltas, report, _ = repeat_align(evs, 4)
     applied = [e for e in report if e.get("applied") and e["window"] == 2]
     assert applied, f"uniform body with one boundary outlier should apply: {report}"
     assert {100 + k for k in range(len(FIGURE))} == set(deltas), deltas
@@ -99,7 +99,7 @@ def test_agogic_ramp_per_beat_fixed():
     evs = (ramp_bar_events(0, zero, start_id=0)
            + ramp_bar_events(1, RAMP, start_id=100)
            + ramp_bar_events(2, zero, start_id=200))
-    deltas, report = repeat_align(evs, 4)
+    deltas, report, _ = repeat_align(evs, 4)
     applied = [e for e in report if e.get("applied") and e["window"] == 2]
     assert applied, f"agogic ramp should auto-apply per beat-group: {report}"
     sb = applied[0]["shift_beats_by_beat"]
@@ -130,7 +130,7 @@ def test_sparse_texture_not_cloned():
     evs = (sparse_bar(0, None, start_id=0)
            + sparse_bar(1, scatter, start_id=100)
            + sparse_bar(2, None, start_id=200))
-    deltas, report = repeat_align(evs, 4)
+    deltas, report, _ = repeat_align(evs, 4)
     assert not deltas, f"sparse scattered bar was cloned: {deltas}"
     flagged = [e for e in report if not e.get("applied") and e["window"] == 2]
     assert flagged, f"window 2 not flagged: {report}"
@@ -151,7 +151,7 @@ def test_consensus_reference_beats_slot_aligned_loner():
     evs = (bar_events(0, jitter=jit1, start_id=0)
            + bar_events(1, shift=0.25, start_id=100)   # dragged exactly one slot
            + bar_events(2, jitter=jit3, start_id=200))
-    deltas, report = repeat_align(evs, 4)
+    deltas, report, _ = repeat_align(evs, 4)
     applied = [e for e in report if e.get("applied")]
     assert applied, f"the dragged loner should be corrected: {report}"
     # reference must be a clean bar (window 1 or 3), NEVER the slot-aligned loner
@@ -183,7 +183,7 @@ def test_rushed_early_downbeat_figure():
     # bar 2 (index 1 -> window 2) rushed early 0.22: its downbeat (id 100)
     # lands at absolute beat 3.78, hard-sliced into window 1.
     evs = cbar(0, 0.0, 0) + cbar(1, -0.22, 100) + cbar(2, 0.0, 200)
-    deltas, report = repeat_align(evs, 4)
+    deltas, report, _ = repeat_align(evs, 4)
     win2 = [e for e in report if e["window"] == 2]
     assert win2, f"window 2 dissolved silently (boundary leak): {report}"
     applied = [e for e in win2 if e.get("applied")]
@@ -215,7 +215,7 @@ def test_boundary_tie_no_clean_downbeat_shift():
     # window); bars 0 & 3 clean. Bar 3's downbeat is id 300 at absolute beat 12.0.
     evs = (cbar(0, 0.0, 0) + cbar(1, 0.20, 100)
            + cbar(2, 0.20, 200) + cbar(3, 0.0, 300))
-    deltas, report = repeat_align(evs, 4)
+    deltas, report, _ = repeat_align(evs, 4)
     assert 300 not in deltas or float(deltas[300]) == 0.0, (
         f"clean bar-3 downbeat (id 300) was shifted by an earlier window: "
         f"delta={deltas.get(300)}")
@@ -235,7 +235,7 @@ def test_clean_sparse_repeat_not_flagged():
                 for k, (off, p) in enumerate(FIG)]
 
     evs = (sparse_bar(0, 0) + sparse_bar(1, 100) + sparse_bar(2, 200))
-    deltas, report = repeat_align(evs, 4)
+    deltas, report, _ = repeat_align(evs, 4)
     assert not deltas, f"clean sparse repeat was modified: {deltas}"
     assert not [e for e in report if e["window"] in (2, 3)], (
         f"clean sparse repeat should be silently skipped, not flagged: {report}")

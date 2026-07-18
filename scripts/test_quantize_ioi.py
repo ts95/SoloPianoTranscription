@@ -58,5 +58,51 @@ def test_equal_iois_engrave_equal():
     print("ok: equal played IOIs re-seated onto equal slots")
 
 
+def test_chord_brush_ghost_dropped():
+    with tempfile.TemporaryDirectory() as d:
+        mid = os.path.join(d, "t.mid")
+        out = os.path.join(d, "t.musicxml")
+        pm = pretty_midi.PrettyMIDI(initial_tempo=60)
+        inst = pretty_midi.Instrument(program=0)
+        for bar in range(2):
+            t0 = bar * 4.0
+            for beat in range(4):
+                t = t0 + beat
+                inst.notes.append(pretty_midi.Note(85, 72, t, t + 0.6))
+                inst.notes.append(pretty_midi.Note(84, 76, t + 0.01, t + 0.6))
+                # a real LH note on every beat, well clear of the RH chord
+                # register, so the bass staff isn't left with zero events
+                # once the ghost below is folded into the RH cluster
+                # (build_measured_part crashes on a wholly-empty staff --
+                # a pre-existing edge case, unrelated to this feature, that
+                # a one-hand-only fixture would otherwise trip)
+                inst.notes.append(pretty_midi.Note(60, 48, t, t + 0.9))
+        # one 30 ms vel-30 brush inside the bar-0 beat-1 chord (pitch 74 sits
+        # between the chord's 72/76, i.e. same-hand register, so it clusters
+        # into the same onset group instead of being hand-split away --
+        # brief's original fixture (pitch 48, vel 40) is 24+ semitones below
+        # the chord and the cost-based hand-assignment (assign_hands) always
+        # splits it into a lone bass note, so it never reaches the len(group)
+        # > 1 branch at all; adjusted here per the prior-task fixture-bug
+        # note, root-caused via a direct `quantize` run showing bass getting
+        # exactly 1 event and treble 8 (no merge) with the original pitch)
+        inst.notes.append(pretty_midi.Note(30, 74, 1.02, 1.05))
+        pm.instruments.append(inst)
+        pm.write(mid)
+        r = subprocess.run([PY, SCRIPT, "quantize", mid, out, "--bpm", "60",
+                            "--time-sig", "4/4", "--bar-phase", "0",
+                            "--no-repeat-align"],
+                           capture_output=True, text=True, check=True)
+        s = json.loads(r.stdout)
+        assert s.get("chord_brush_dropped", {}).get("count") == 1, (
+            s.get("chord_brush_dropped"))
+        from music21 import converter
+        sc = converter.parse(out)
+        pitches = [p.midi for n in sc.recurse().notes for p in n.pitches]
+        assert 74 not in pitches, "brush ghost survived into a chord"
+    print("ok: chord-brush ghost dropped from the merged chord")
+
+
 if __name__ == "__main__":
     test_equal_iois_engrave_equal()
+    test_chord_brush_ghost_dropped()
