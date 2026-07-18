@@ -1,515 +1,290 @@
-# Grid Surgery: deterministic toolkit + reasoning skill
+# Grid Surgery & Score-Refinement Toolkit
 
-**Date:** 2026-07-18
+**Date:** 2026-07-18 (rewritten same day, consolidating 10 addenda)
 **Status:** Approved design
+**Case studies backing each rule:** docs/WHY_MIDI_TO_SCORE_IS_HARD.md and the
+2026-07 piece directories (Cry Me A River, I Wish You All The Luck, Strobe,
+Mirrors rerun).
 
-## Problem
+## Goal
 
-On three consecutive pieces (Cry Me A River, I Wish You All The Luck Of The
-World, Strobe) the beat grid needed hand surgery after the bake-off: the
-winning tracker had localized failures (dotted-eighth level hops in 16th
-washes, lost pulse in sparse texture, untracked ritardandi). The repair code
-was rewritten inline each time — per-region fit tables, free period×phase
-scans, anchored lattice construction, refine-style nudging, cluster tail
-tracking, splice assembly with downbeat/parity bookkeeping. The math is
-identical every time; only the *interpretation* (what is wrong, what to test,
-what to rebuild) needs model reasoning. The parity bookkeeping is exactly
-where hand-written code grows bugs (one occurred during the Strobe assembly).
+Move every mechanical operation of grid repair and score refinement into
+deterministic scripts; reserve model reasoning for classification, repair
+strategy, and by-ear judgment; dispatch subagents on the cheapest model tier
+that each step needs.
 
-## Split: what is deterministic vs what needs the model
+## 1. Division of labor
 
-**Deterministic (→ `scripts/grid_surgery.py`):**
-- Windowed/region onset-fit measurement (extends the existing
-  `grid_fit_probe`)
-- Coarse tempo map (median beat period per block)
-- Free uniform scans over a time window: period × phase grid search, run at
-  both the quarter range and the sublevel (3/4) range, reporting both
-- Onset-cluster tables (attack times + gaps) for a window
-- Anchored lattice construction: uniform or piecewise periods from a seam
-  anchor, beat-count parity (multiple of 4) enforced
-- Refine-style nudge: shrinking-window median-residual smoothing with
-  endpoint pinning (extracted from `refine_fixed_grid_to_midi` so both share
-  one implementation)
-- Cluster-tracked ritardando tail (beat = 4 × local 16th gap, greedy snap)
-- Splice assembly: seam snapping to base downbeats, monotonicity checks,
-  automatic re-probe, before/after per-region fit report
-- Plan validation: refuse overlapping spans, seams off downbeats, or a result
-  that regresses fit in untouched regions
+**Deterministic (scripts):** fit measurement, tempo maps, window scans,
+lattice construction, nudging, splicing, tail tracking, MIDI window trims,
+score queries (bar/family/layout diffs), defect-class sweeps, the rebuild
+chain, all file-format mechanics.
 
-**Model reasoning (→ `.claude/skills/grid-surgery/SKILL.md`):**
-- Classifying a flagged window: level hop vs genuine rubato vs lost pulse vs
-  fermata (identical headline symptoms, different fixes)
-- Designing the discriminating measurement for ambiguous cases
-- Choosing spans and anchors from musical structure; real-tempo-push vs hop
-  decisions by continuity (in a 16th wash, onset fit cannot decide level or
-  phase — only continuity can)
-- Knowing when to stop: performance-class fit ceilings (sequenced ≈ 1.0,
-  steady human ≈ 0.99, rubato ballad ≈ 0.94–0.98, jittery syncopated
-  ≈ 0.85–0.90)
-- Repeat-alignment distribution sanity (fixes concentrated in rubato spans =
-  feature working; spread across a steady ostinato = grid suspect)
-- Authoring CLEANUP_NOTES flags
+**Model (skill-guided):** classifying flagged spans (level hop vs lost pulse
+vs genuine rubato vs fermata), designing discriminating measurements,
+choosing repair spans/anchors by musical structure, family-based fine
+adjustments, CLEANUP_NOTES authorship.
 
-## Toolkit: `scripts/grid_surgery.py`
+**Model tiers (dispatch explicitly per step):**
 
-CLI with two subcommands, run with `.venv/bin/python`.
+| Tier | Use |
+|---|---|
+| Haiku | Run a script, relay its digest: rebuilds, bake-off builds, verify, sweeps, exports, test runs. |
+| Sonnet | Rubric-guided judgment: key/enharmonic choice (lint decides), clean-probe bake-off verdicts, PDF checklist passes, CLEANUP_NOTES drafts. |
+| Opus | Default per-piece orchestrator: sequences stages, interprets diagnostics, writes surgery plans for known failure classes, runs targeted ear-feedback diagnosis. |
+| Fable | Novel failure modes only: unclassifiable diagnostics, root-causing new defect classes into code+tests, phase-ambiguous surgery design. Opus escalates after stalling twice on the same defect. |
 
-### `diagnose`
+## 2. Already implemented (this session; keep, do not rebuild)
 
-```
-grid_surgery.py diagnose <cleaned.mid> <beats.json> --midi-shift <s> \
-    [--output diagnose.json]
-```
+- `grid_fit_probe()` windowed probe; `beats --refine/--from-midi` report
+  `onset_grid_fit`, `weak_windows`, `level_hop_suspects`.
+- Repeat-align windows are bar-true (bar phase inferred before alignment).
+- Arpeggio marks require > 90 ms chord spread.
+- `apply_harmony_pedal.py`: `--anacrusis N` (pickup-bar conversion, runs
+  before pedaling), forced-BeamMode strip, irregular-measure pedal ticks.
+- `quantize`: no one-slot tie-fill appendices; exact fills poking ≤ 1 slot
+  past a barline end flush.
+- `clean_musicxml --source generated`: collapses any surviving within-bar
+  one-slot tie stub (final invariant; unit test still owed — see §5).
+- Tests: repeat-align suite, anacrusis, beam strip, updated tie-fill policy.
 
-Emits one JSON report:
-- `tempo_map`: per-32-beat block — beat range, bar range, start time, median
-  period, BPM
-- `probe`: the existing `grid_fit_probe` output (global fit, weak_windows,
-  level_hop_suspects)
-- `flag_clusters`: contiguous flagged windows merged into spans; for each
-  span, automatic free scans over its time range at the quarter range
-  (global median period ±20%) and the sublevel range (3/4 of the quarter
-  range), each reporting best BPM + fit, plus the grid's own fit in the span. Numbers only — no classification field; interpretation is
-  the skill's job.
+## 3. Toolkit to build
 
-### `repair`
+### 3.1 `scripts/grid_surgery.py`
 
-```
-grid_surgery.py repair <plan.json>
-```
+`diagnose <cleaned.mid> <beats.json> --midi-shift S [--output F]` → one JSON:
+- `tempo_map`: per-32-beat block (beat/bar range, start time, median period, BPM)
+- `probe`: `grid_fit_probe` output plus `subdivision_fit` (see §3.2)
+- `flag_clusters`: contiguous flagged windows merged to spans; per span, free
+  period×phase scans at the quarter range (global median period ±20%) and the
+  sublevel range (¾ of quarter), each reporting best BPM + fit, plus the
+  grid's own fit in the span. Numbers only; classification is the skill's job.
 
-Plan schema (all paths relative to the plan file's directory):
+`repair <plan.json>` — declarative surgery plan, paths relative to the plan:
 
 ```json
-{
-  "base": "beats.frommidi.json",
-  "midi": "<slug>.cleaned.mid",
+{ "base": "beats.frommidi.json", "midi": "<slug>.cleaned.mid",
   "midi_shift": 4.183,
   "repairs": [
     {"span_s": [156.2, 222.0], "op": "splice",  "source": "beats.refine128.json"},
     {"span_s": [222.0, 254.2], "op": "lattice", "period": 0.492},
     {"span_s": [328.1, "end"], "op": "lattice",
-     "pieces": [[355, 0.455], [395, 0.448], [430, 0.474], ["end", 0.486]]}
-  ],
-  "output": "beats.json"
-}
+     "pieces": [[355, 0.455], [395, 0.448], ["end", 0.486]]} ],
+  "output": "beats.json" }
 ```
 
-(A `tail` example, from Cry Me A River: `{"span_s": [293.4, "end"], "op":
-"tail"}` — spans within one plan must not overlap.)
+Ops: `splice` (another grid's beats over the span, seam-snapped), `lattice`
+(uniform `period` or piecewise `pieces`, anchored on the span's start seam,
+onset-nudged; both seams pinned unless the span ends at `"end"`), `tail`
+(cluster-tracked ritardando: beat = 4 × local 16th gap, to the last onset).
 
-Ops (the three shapes every surgery this session needed):
-- `splice`: replace the span's beats with another grid's beats over the same
-  time range, seam-snapped
-- `lattice`: uniform (`period`) or piecewise (`pieces`: list of
-  `[until_time_s | "end", period_s]`) lattice anchored on the span's start
-  seam, onset-nudged (both seams pinned; end seam free when span ends at
-  `"end"`)
-- `tail`: cluster-tracked ritardando from the span start to the last onset
+Executor owns all mechanics: span edges snap to base-grid downbeats
+(index % 4 == 0); per-span beat-count parity forced to a multiple of 4;
+repairs execute in time order; overlapping spans are an error; output must be
+strictly monotonic; result is auto-probed with a per-region before/after
+report; fit regression in an untouched region is an error. The plan file
+stays in the piece directory as the audit record; the output's `source`
+field names it.
 
-Executor mechanics (all owned by the script, never the model):
-- Span starts/ends snap to the nearest base-grid downbeat (index % 4 == 0);
-  `"end"` means past the last onset
-- Beat-count parity per span forced to a multiple of 4 (adjusting lattice N
-  or dropping/stretching one seam interval), so downstream bar phase is
-  preserved unless the repair's true beat count differs — in which case
-  downstream phase follows the repaired count (continuity)
-- Repairs execute in time order; overlapping spans are an error
-- Output must be strictly monotonic; assembled grid is auto-probed; report
-  prints global fit and per-region before/after (regions = each repair span
-  plus the untouched remainder); a fit regression in untouched regions is an
-  error
-- The plan file stays in the piece directory as the audit record; the output
-  beats.json `source` field names the plan file
+Shared internals: extract the shrinking-window nudge from
+`refine_fixed_grid_to_midi` into one module-level function used by refine,
+the smoothing pass (§3.2), and `repair`.
 
-## Skill: `.claude/skills/grid-surgery/SKILL.md`
+### 3.2 `transcription_cleanup.py` changes
 
-Fires from cleanup-score when the bake-off winner's probe shows weak windows
-or level-hop suspects. The loop:
+- **DP smoothing (default for `--from-midi`)**: moving-median period filter
+  (window 5) rebuilds the sequence, then the shrinking-window nudge
+  (16, 12, 8, 6, 4) re-seats it on the onsets. Report `raw_fit` alongside the
+  (smoothed) `onset_grid_fit`. Rationale: raw DP beats jitter (16 ms median
+  period jump) and displace notes across slot boundaries near barlines.
+- **Full-coverage rule**: the final grid must cover every onset. Extend
+  backward/forward by extrapolating the boundary period, prepending in
+  multiples of 4 beats (early free material becomes pickup content).
+  `quantize` warns loudly if any onset falls outside the grid.
+- **`subdivision_fit`**: fit computed over non-beat slots only, reported by
+  `beats` and `grid_fit_probe`. Rationale: the DP anchors beats on onsets, so
+  on-beat fit is partly self-fulfilling; subdivision fit is the honest
+  comparator between grid families.
+- **IOI-ratio re-seat (post-snap repair in `quantize`)**: detect runs of ≥ 3
+  same-staff onsets whose played IOIs are near-equal (max/min ≤ 1.25) but
+  whose snapped IOIs differ by ≥ 2×; re-seat the run on the grid value
+  nearest the median played IOI, anchored on the run's best-snapped onset.
+  Fire only if re-seated positions stay within 0.2 beat of the played
+  onsets. Report `ioi_reseated` (count + bars).
+- **Chord-brush ghost drop (at chord merge in `quantize`)**: a slot-merged
+  chord member with raw duration < 0.055 s AND velocity < 0.75 × the chord's
+  maximum is dropped (key/pedal brush). Exception: keep it when a
+  pitch-family sibling chord contains the same pitch (brushed voicing).
+  Report count + bars.
+- **`clean --keep-window <lo_s>:<hi_s>`**: strip notes and CC64 outside the
+  window (cleaned-MIDI time), re-zero to the first kept onset, report the
+  resulting audio-domain shift. For video intro/outro jingles; boundary
+  choice stays with the model (onset-gap table in `score_query bar`).
+- **`verify --audio-window <lo_s>:<hi_s>`**: trim the recording internally
+  before chroma-DTW.
 
-1. `diagnose` the winner.
-2. Classify each flag cluster with the rubric:
-   - period ratio near 3/4, 4/3, 2, or 1/2 → **level hop** (in a continuous
-     16th wash every sub-multiple grid and 16th-shifted phase fits perfectly;
-     decide level/phase by continuity, never by local fit)
-   - ratio ≈ 1.0, low fit → run the free-scan discrimination: strong
-     free-scan fit at a *different* tempo than the grid → **lost pulse**
-     (rebuild with lattice at the scanned tempo); free scan weak everywhere →
-     **genuine rubato / fermata** (flag for the ear, do not fix)
-   - periods growing smoothly toward the end → **real ritardando** (tail op
-     if the tracker raced it, otherwise leave)
-3. Write the surgery plan; `repair`; re-`diagnose`.
-4. Iterate until windows are clean and fit ≈ 0.99 — escalating through
-   methods per Addendum 3; stopping below target requires written proof of
-   irreducibility, not a class-ceiling citation.
-5. Record the surgery (plan file name, before/after fit) in CLEANUP_NOTES,
-   including the standing caveat that repaired-span bar phase was chosen by
-   continuity.
+### 3.3 `scripts/finish_score.py` (rename of `apply_harmony_pedal.py`)
 
-cleanup-score's current inline "hybrid repair recipe" prose is replaced by a
-pointer to this skill.
+One CLI for the post-import `.mscz` finishing pass:
+`finish_score.py <file.mscz> [--anacrusis N] [--midi <cleaned.mid> --beats
+<beats.json>] [--staff N] [--keep-backup]`.
 
-## Files (updated per Addendum 4's restructuring)
+Order: anacrusis conversion → harmony-pedal analysis + insertion →
+hygiene strip (forced BeamMode, `LayoutBreak` elements, solo-piano
+instrument long/short names) → repackage. `apply_harmony_pedal.py` is
+deleted; `musescore_pedal_lib.py` renames to `musescore_lib.py`;
+`test_midi_pedal.py` renames to `test_finish_score.py`. All references
+(skills, CLAUDE.md, README, pipeline blocks) update in the same delivery —
+no alias.
 
-- Create: `scripts/grid_surgery.py` — `diagnose` / `repair` CLI
-- Create: `scripts/test_grid_surgery.py` — synthetic fixtures: a constructed
-  MIDI with (a) a known dotted-eighth hop span and (b) a known rit tail;
-  assert diagnose flags them, a plan repairs them, re-probe is clean; plus
-  plan-validation error cases (overlap, regression)
-- Create: `scripts/finish_score.py` — rename/absorption of
-  `apply_harmony_pedal.py` (see Addendum 4); `apply_harmony_pedal.py` deleted
-- Create: `scripts/rebuild_score.py` + per-piece `piece.json` manifest
-  (Addendum 9) — the one-command chain driver
-- Create: `scripts/score_query.py` — `map` / `bar` / `family` / `sweep` /
-  `layout` (Addenda 5, 8, 9); all views two-staff by default
-- Rename: `scripts/musescore_pedal_lib.py` → `scripts/musescore_lib.py`
-- Create: `.claude/skills/grid-surgery/SKILL.md`
-- Modify: `scripts/transcription_cleanup.py` — extract the nudge from
-  `refine_fixed_grid_to_midi` into a shared module-level function; DP
-  smoothing + full-coverage extension in `cmd_beats`; `subdivision_fit`;
-  `clean --keep-window`; `verify --audio-window`; quantize out-of-grid
-  warning
-- Modify: `scripts/test_midi_pedal.py` → rename `scripts/test_finish_score.py`
-  (imports follow the rename)
-- Modify: `.claude/skills/cleanup-score/SKILL.md` — grid section points at
-  the grid-surgery skill; pipeline commands use `finish_score.py`
-- Modify: `CLAUDE.md`, `README.md` — new scripts, renames, pipeline commands
+`--midi` (CC64 write-back) remains only for under-detected pedal sources; a
+real performance's CC64 stays in the cleaned MIDI.
 
-## Addendum (2026-07-18, from the Mirrors rerun)
+### 3.4 `scripts/rebuild_score.py` + `piece.json`
 
-A final validation transcription (Mirrors, full video, fresh run) exercised
-the standardized flow end-to-end. The grid path needed **zero hand code** —
-bake-off, probe, quantize all ran clean (from-midi 0.980, no flags,
-overturning the first delivery's refine grid at 0.925). Exactly two
-hand-written snippets remained, both deterministic; add them to the toolkit
-scope:
+Per-piece manifest (written at first delivery):
 
-1. **`clean --keep-window <lo_s>:<hi_s>`** — strip notes and CC64 outside the
-   window (in cleaned-MIDI time), re-zero to the first kept onset, and report
-   the resulting audio-domain shift (`trim_shift_s` + window start) for
-   `--midi-shift`/`--beats-shift`. Used for video intro/outro jingles.
-   Deciding the boundaries (which onset gaps are jingle seams) stays with the
-   model — `diagnose`-style support comes free from the onset-gap table.
-2. **`verify --audio-window <lo_s>:<hi_s>`** — trim the recording internally
-   before chroma-DTW, so a windowed piece doesn't need a hand-made ffmpeg
-   copy.
+```json
+{ "slug": "...", "key": "Eb major", "time_sig": "4/4",
+  "beats": "beats.json", "beats_shift": 13.754,
+  "title": "Mirrors", "composer": "Justin Timberlake",
+  "performer": "Pianistmiri", "arranger": null,
+  "anacrusis": 3, "dynamics_from_cleaned_midi": true,
+  "quantize_flags": [], "post_flags": [] }
+```
 
-Skill-rubric addition: **repeat_alignment count is grid evidence** — the
-Mirrors rerun's better grid took the applied count from 1 to 0 while bars
-2 and 4 still engraved identically; a candidate grid that reduces applied
-repeat-fixes (without introducing rhythm divergence in verify) is preferred.
+`rebuild_score.py <piece-dir>` runs: quantize → post → clean_musicxml →
+`edits.py` (if present) → mscore → finish_score → export .musicxml/.pdf →
+verify, persisting every stage summary under `output/<slug>/reports/` and
+printing one compact combined digest. Any re-delivery is one command; no
+arguments are ever retyped.
 
-## Addendum 2 (2026-07-18, from the Mirrors rerun's ear-reported defects)
+### 3.5 `scripts/score_query.py`
 
-The user heard two defects in the rerun ("the very first bar rushes — onsets
-and durations wrong" and "at the boundary between bars, the rhythm is
-sometimes off"). Both were measured, root-caused, fixed by hand, and belong
-in the toolkit as defaults:
+Compact fixed-width output designed for model reading; **all note views show
+both staves** (single-staff views caused a one-staff fix).
 
-1. **DP grids must be smoothed (`beats --from-midi` default post-pass).**
-   The onset-DP places beats *at* played onsets, so its beat-to-beat periods
-   jitter (Mirrors: median period jump 16 ms, 161 jumps >30 ms across 614
-   beats — vs 6 ms for refine). A beat displaced 40+ ms pushes notes played
-   on adjacent 16ths across slot boundaries → wrong engraved rhythms near
-   barlines, invisible in aggregate fit. Fix, now standard: moving-median
-   period filter (window 5) to rebuild the sequence, then the shrinking-
-   window nudge (16, 12, 8, 6, 4) back onto the onsets. Mirrors result: fit
-   0.980 → 0.989, subdivision fit 0.972 → 0.988, median jump 16 → 5 ms,
-   >30 ms jumps 161 → 15. The smoothing runs inside `cmd_beats` for
-   `--from-midi`; the report carries `raw_fit` and (smoothed) `onset_grid_fit`.
+- `map <piece-dir> <bar-or-time>`: printed-bar ↔ XML-measure ↔ quantize-
+  window ↔ grid-beat ↔ MIDI-second ↔ audio-second table for a span.
+- `bar <piece-dir> <n>[-<m>]`: per-bar aligned diff — engraved elements
+  (offset, duration, pitches, ties, marks) against played onsets (beat
+  position, nearest slot, deviation, velocity, raw duration), plus the
+  span's onset-gap table.
+- `family <piece-dir> <n>`: the bar's siblings by BOTH matchers — pitch
+  family (repeat-align's multiset Jaccard) and rhythm family (in-bar
+  onset-pattern similarity, transposition-invariant) — with engraved rhythms
+  side by side and divergences marked.
+- `sweep <piece-dir>`: all defect-class detectors in one pass: one-slot tie
+  stubs, chord-brush ghosts, IOI-inconsistent runs, family-skeleton
+  near-misses (≤ 2 slot moves from a skeleton occurring ≥ 3×), arpeggio
+  spreads, unbalanced measures.
+- `layout <piece-dir>`: bars-per-page/system distribution from the `.mscz`;
+  flags orphan pages, stale LayoutBreaks, instrument-label leaks.
 
-2. **Full-coverage rule: the grid must cover every onset.** The DP starts at
-   its strongest chain, which can leave early free material (Mirrors: five
-   opening-sweep notes over 0.585 s) *before* beat 0 — quantize silently
-   crams those notes into bar 1 (the "rushed first bar"). Fix, now standard:
-   extend the grid backward (and forward) by extrapolating the boundary
-   period, prepending in **multiples of 4 beats** so downbeat phase is
-   preserved and the early material becomes pickup content in a mostly-rest
-   bar 1. Bonus observed: with real coverage, quantize's pickup inference
-   fired correctly (confidence 0.62, "bar 1 opens with 3 beats of rest").
-   `quantize` additionally gets a loud warning when any onset falls outside
-   the beat grid.
+### 3.6 `.claude/skills/grid-surgery/SKILL.md`
 
-3. **`subdivision_fit` joins the metrics.** Because the DP anchors beats on
-   onsets, on-beat fit is partly self-fulfilling (Mirrors slot histogram:
-   1341 on-beat for from-midi vs 878 for refine on the same notes). The
-   honest comparator is fit over non-beat slots only. `beats` reports and
-   `grid_fit_probe` computes `subdivision_fit`; the bake-off compares both
-   (a from-midi win that holds on subdivision_fit is real — Mirrors: 0.972
-   vs refine's 0.928, so the ranking stood).
+Fires from cleanup-score when the bake-off winner's probe flags windows, and
+for all targeted ear-feedback work.
 
-## Addendum 3 (2026-07-18): the fit target is ~0.99 — iterate until reached or provably irreducible
+**Grid loop:** diagnose → classify each flag cluster → plan → repair →
+re-diagnose. Classification rubric:
+- period ratio near ¾, 4/3, 2, ½ → **level hop**. In a continuous 16th wash
+  every sub-multiple grid and every 16th-shifted phase fits the onsets
+  perfectly; decide level and phase by continuity with neighboring sections,
+  never by local fit.
+- ratio ≈ 1.0 with low fit → free-scan the span: strong fit at a different
+  tempo → **lost pulse** (lattice at the scanned tempo); weak everywhere →
+  **genuine rubato/fermata** (flag, don't fix).
+- periods growing smoothly at the end → **real ritardando** (tail op if the
+  tracker raced it).
 
-The stop criterion changes. The old "performance-class ceilings"
-(jittery syncopated ≈ 0.85–0.90 etc.) were calibrated on *raw* grids; the
-smoothing pass showed they were partly artifacts of the method, not the
-performance (Mirrors: raw 0.980 → smoothed 0.989). The loop's goal is now:
+**Stop criterion:** onset fit ≈ 0.99 (subdivision_fit close behind).
+Below target, escalate through methods (smoothing variants, per-section
+scanned lattices, finer piecewise splits, per-span candidate swaps) and keep
+the measured best. Stopping below target requires written proof of
+irreducibility in CLEANUP_NOTES: name the residual spans and the measurement
+showing no lattice fits them. Historical class ceilings are expectations,
+not stop lines.
 
-- **Target: onset fit ≈ 0.99** (and subdivision_fit close behind).
-- Below target, do not stop — escalate through methods: smoothing variants
-  (window sizes, median vs mean), per-section lattices with scanned periods,
-  finer piecewise splits, span-local re-anchoring, tail cluster-tracking,
-  alternative candidates per span (each grid family per region), and any
-  new deterministic method that the diagnosis suggests. Each attempt is
-  measured; keep the best.
-- Stopping below ~0.99 requires **written proof of irreducibility** in
-  CLEANUP_NOTES: name the residual spans and the discriminating measurement
-  showing no lattice can fit them (e.g. free per-window scans also score low
-  → genuine rubato/fermata; asynchronous rolled attacks wider than the 0.07
-  tolerance). "This class of piece usually scores X" is no longer an
-  acceptable stop reason on its own.
-- The old class ceilings survive only as *expectations* (what typically
-  needs escalation), not as stop lines.
+**Grid diagnostics from other features:** many applied repeat-alignments on
+an ostinato piece, or repeat-alignment counts that drop on a candidate grid,
+are grid evidence.
 
-## Addendum 4 (2026-07-18): script naming and structure cleanup
+**Targeted ear-feedback loop (one-shot doctrine):** for every ear report —
+1. Map the report (`score_query map`), produce the two-staff aligned diff
+   (`score_query bar`).
+2. Characterize the defect **as a class** (mechanical predicate) and sweep
+   the whole piece for it (`score_query sweep`).
+3. Find the figure's family (`score_query family`, both matchers). Cleanly
+   played siblings are ground truth: the correction target is the family
+   skeleton, not the locally-nearest slot. Family evidence outranks local
+   heuristics in both directions. Only figures with no clean sibling are
+   decided by local evidence (IOI ratios, slots).
+4. Discriminate performance vs pipeline: identical across all instances →
+   performance; divergent from clean instances → pipeline.
+5. Fix at the deepest sensible level: producer policy (quantize) > end-of-
+   chain invariant (clean_musicxml) > per-piece `edits.py` instance patch.
+   Code fixes ship with a regression test.
+6. Verify the region, not the patch: re-audit the edited bar ± 1 **in both
+   staves** plus the whole family against the sweep checklist; re-run the
+   class sweep to zero; `rebuild_score.py` for the re-delivery.
 
-`apply_harmony_pedal.py` has accreted unrelated responsibilities (harmony
-pedaling, CC64-to-MIDI write, forced-beam stripping, anacrusis conversion)
-— it is really the **post-import .mscz finishing pass**, and its name no
-longer describes it. Restructure during implementation:
+### 3.7 Pipeline integration
 
-- **`scripts/finish_score.py`** (new home, `apply_harmony_pedal.py` deleted):
-  one CLI over the finishing pass on a fresh `.mscz` —
-  `finish_score.py <file.mscz> [--anacrusis N] [--midi <cleaned.mid>
-  --beats <beats.json>] [--staff N] [--keep-backup]`.
-  Order of operations: anacrusis conversion → harmony-pedal analysis +
-  insertion → forced-BeamMode strip → repackage. Internals live in named
-  functions (`make_anacrusis`, `strip_beam_modes`, `write_midi_pedal`,
-  pedaling flow) so each stays independently testable.
-- **`scripts/musescore_lib.py`** (rename of `musescore_pedal_lib.py`): the
-  mscx plumbing (extract/repackage, staff/measure access) is general
-  MuseScore-file infrastructure, not pedal-specific; the pedal-schedule
-  helpers stay in it (moving them further is not worth a third module).
-- `scripts/test_midi_pedal.py` → `scripts/test_finish_score.py`.
-- `analyze_pedaling.py` unchanged (single clear responsibility).
-- All pipeline commands, skills, CLAUDE.md and README references update to
-  `finish_score.py` in the same delivery — no transition period, no alias.
+- The `.mscz` is a **build product**. Sources: `cleaned.mid` + `beats.json`
+  + `piece.json` + `edits.py`. Never edit a roundtripped file; never feed an
+  mscore-exported MusicXML back to mscore (add to CLAUDE.md gotchas beside
+  "never import a .mid").
+- `edits.py` holds by-ear surgical corrections (music21, against the fresh
+  pre-MuseScore MusicXML), run automatically by `rebuild_score.py`; each
+  edit carries a structural gate (balance, expected content) so a drifted
+  baseline aborts the build instead of corrupting it.
+- cleanup-score's wrap-up invites targeted ear feedback in bar/time terms;
+  CLEANUP_NOTES records grid choice, surgeries (plan files), edits, and the
+  verify-by-ear list.
+- cleanup-score's grid section shrinks to: run the bake-off (build refine
+  hints sweep + from-midi on the same cleaned MIDI; compare onset_grid_fit
+  AND subdivision_fit; probe must be clean), else invoke grid-surgery.
 
-## Addendum 5 (2026-07-18): the ear-feedback loop is a pipeline stage, with purpose-built query tools
+## 4. Files
 
-The Mirrors session established the working pattern: **the pipeline does its
-best autonomously; the user then reports what sounds wrong ("bar 6–7 is
-weird", "the arpeggios don't sound right", "the first pedal is too long");
-the model does targeted analysis of exactly those spots with the raw MIDI
-and all tools, root-causes, fixes, and re-delivers.** That loop found three
-genuine code bugs in one pass (repeat-align windows straddling barlines in
-pickup pieces; arpeggio marks firing on ordinary 40 ms hand asynchrony; the
-anacrusis measure getting a full-bar pedal span). It becomes a standing
-stage:
-
-- cleanup-score's wrap-up explicitly invites targeted feedback in bar/time
-  terms, and CLEANUP_NOTES states that ear reports will be investigated
-  against the raw MIDI.
-- The grid-surgery skill gains a "targeted diagnosis" section: given a
-  bar/time report, (1) map it to grid beats and MIDI time, (2) produce the
-  aligned engraved-vs-played diff for the span, (3) check whether the defect
-  recurs at similar bars (the repeat family), (4) discriminate performance
-  vs pipeline (a defect that recurs at every family instance identically is
-  the performance; one that differs from clean instances is the pipeline),
-  (5) fix code (with regression test) or the piece, then re-deliver.
-- **Family reference is mandatory for fine adjustments (rule).** Before any
-  by-ear micro-correction, locate the figure's siblings elsewhere in the
-  piece (`score_query family`) and use the cleanly played instances as
-  ground truth: the correction target is the family skeleton, not the
-  locally-nearest slot. Family evidence outranks local heuristics in both
-  directions — Mirrors bar 7 was the bars-3/5 line played ~0.28 late and
-  belonged on their exact rhythm (whole-line shift, not per-onset honesty),
-  and its "ghost" E♭4 turned out to be the family voicing brushed lightly
-  (kept, overturning the brush-drop heuristic). Only when a figure has no
-  clean sibling does local evidence (IOI ratios, slots) decide.
-- **Families are rhythmic, not just pitch-identical (rule).** Rhythmic
-  figures recur transposed — higher, lower, in another key — with the same
-  rhythmic skeleton. `score_query family` therefore matches on BOTH axes and
-  reports which kind of sibling it found: pitch-family (repeat_align's
-  multiset Jaccard) and **rhythm-family** (in-bar onset-pattern similarity,
-  transposition-invariant). The rhythm-skeleton prior also works as an
-  outlier detector: a bar whose engraved rhythm is a near-miss (≤2 slot
-  moves) of a skeleton occurring ≥3× elsewhere is a correction candidate —
-  auto-adjust only when the played onsets are within snap tolerance of the
-  skeleton reading too (i.e. the evidence is ambiguous and the prior
-  decides); otherwise flag with the skeleton named. Pitch-blind matching is
-  looser, so the frequency (≥3) and near-miss (≤2 moves) gates are hard.
-
-**Token-efficient purpose-built tools** (the session's hand-written inline
-analyses, hardened into one CLI — `scripts/score_query.py`):
-
-- `map <score> <beats.json> <bar-or-time>` — the printed-bar ↔ XML-measure ↔
-  quantize-window ↔ grid-beat ↔ MIDI-second ↔ audio-second correspondence
-  table for a span. (Getting this mapping wrong by one cost more tokens than
-  any other single mistake in the session — three different numbering frames
-  exist, plus pickup exclusion.)
-- `bar <score> <cleaned.mid> <beats.json> <n>[-<m>]` — per-bar aligned diff:
-  engraved elements (offset, duration, pitches, ties, marks) against played
-  onsets (beat position, nearest slot, deviation, velocity, raw duration),
-  one compact table per bar.
-- `family <score> <n>` — find the bar's repeat family (pitch-multiset
-  similarity, reusing repeat_align's matcher) and print the instances'
-  engraved rhythms side by side with divergences highlighted.
-- All output is compact fixed-width text designed to be read by the model —
-  no JSON envelopes, no prose.
-
-These are deterministic, reuse existing internals (`grid_fit_probe`,
-`repeat_align`'s matching, music21 parsing), and replace the ~10 bespoke
-inline scripts this session wrote for the same purposes.
-
-Regression tests added by this addendum's bug fixes (already in code, plan
-must keep them): bar-true repeat-align windows on pickup pieces, the 90 ms
-arpeggio threshold, irregular-measure pedal ticks.
-
-## Addendum 6 (2026-07-18): IOI-ratio consistency — equal played intervals must engrave as equal values
-
-Second ear pass on Mirrors bar 6: the treble figure should read dotted-8th,
-16th, 16th but engraved as dotted-8th, 8th, 16th. The played onsets sat at
-beat positions 0.88 / 1.15 / 1.42 — **equally spaced** (IOIs 0.27, 0.27),
-dragged ~0.15 behind the grid as a group. Per-onset snapping sent each to its
-independently-nearest slot (0.75 / 1.25 / 1.5), splitting the equal intervals
-into an 8th + 16th. This violates the classic quantization principle (Desain
-& Honing): inter-onset *ratios* carry the rhythm, not absolute positions.
-
-New deterministic post-snap repair in `quantize` (with regression test on the
-bar-6 pattern):
-
-- Detect runs of ≥3 successive same-staff onsets whose played IOIs are
-  near-equal (max/min ≤ ~1.25) but whose snapped IOIs are unequal (some
-  differing by ≥2×).
-- Re-seat the run: anchor on the run's best-snapped onset, lay the remaining
-  onsets at the run's median snapped IOI (choosing the grid value nearest the
-  median played IOI), respecting the bar and neighbouring onsets.
-- Gate conservatively: only fire when the re-seated positions stay within
-  ~0.2 beat of the played onsets (an agogic drag/rush, not a rewrite), and
-  report every application in the summary (`ioi_reseated` count + bars) for
-  CLEANUP_NOTES.
-
-This complements repeat alignment (which needs family evidence): IOI
-consistency is *self-evidence* — it fires on figures that appear only once.
-
-Two sibling mechanical repairs from the same ear passes (both in `quantize`,
-both reported in the summary, both regression-tested):
-
-- **Chord-brush ghosts**: a slot-merged chord member with raw duration
-  < ~0.055 s AND velocity well below the chord's strongest note (ratio
-  < ~0.75) is a key/pedal brush, not a voicing — drop it from the chord
-  (Mirrors bar 6: a 40 ms vel-51 C3 inside a treble 16th; bar 7: a 44 ms
-  E♭4 inside the melody chord). `clean` keeps these (in-key, consonant) —
-  the chord context is what condemns them, so the fix lives at chord-merge.
-- **No cross-barline tie-stubs under pedal**: when legato fill would tie a
-  note across a barline into a stub shorter than one beat and the pedal is
-  down, end the note flush at the barline instead — the pedal carries the
-  ring, and the stub doubles the next chord's pitches visually (Mirrors 6→7:
-  G3,E♭4 engraved three times in a row across the boundary).
-
-## Addendum 7 (2026-07-18): surgical edits rebuild from source — never round-trip the .mscz
-
-Editing the delivered score by round-tripping (mscz → exported musicxml →
-edit → re-import) broke the file: MuseScore's MusicXML export embeds its
-layout, and re-importing froze 50 stale system/page breaks as LayoutBreaks
-(pages with a single bar), re-pinned beams, and surfaced instrument labels.
-Patching the patched file compounded it (16-page layout). Standing rules:
-
-- **The `.mscz` is a build product.** A piece's sources are `cleaned.mid` +
-  `beats.json` + the deterministic chain + its surgical edits. Any
-  correction re-runs the chain; nothing edits a roundtripped file.
-- **Surgical edits live at the pre-MuseScore stage**: a per-piece edit script
-  (`output/<slug>/edits.py`, music21 against the fresh
-  quantize→post→clean_musicxml output) applied between `clean_musicxml` and
-  the `.mscz` conversion. The cleanup-score chain runs it automatically when
-  present, so re-deliveries are reproducible with one command and ear-fix
-  history is versioned in the piece directory (documented in CLEANUP_NOTES).
-- **Never feed an mscore-exported MusicXML back to mscore.** (Sibling of the
-  "never import a .mid" rule; add to CLAUDE.md gotchas at implementation.)
-- `finish_score.py` defensively strips `LayoutBreak` elements and solo-piano
-  instrument long/short names in its hygiene pass, alongside BeamMode.
-
-## Addendum 8 (2026-07-18): one-shot doctrine — fix the class, sweep the piece, verify the region
-
-Five sequential ear reports on Mirrors bars 6–7 each exposed the next latent
-defect one span further out, because each fix was an element patch verified
-only locally. The tie-stub report broke the pattern: the "one" defect existed
-in **44 measures** (including the sibling bars the previous fix had faithfully
-copied). Standing doctrine for every ear report from now on:
-
-1. **Characterize the defect as a class, not an instance.** Before fixing,
-   express the defect mechanically (e.g. "tied continuation ≤ 1 slot",
-   "chord member < 55 ms", "line displaced vs family skeleton") and sweep
-   the WHOLE piece for it. The report names one bar; the class names the
-   real scope.
-2. **Fix at the deepest sensible level**: policy in the producer (quantize)
-   when the class is a generation rule; a source-independent invariant at
-   the end of the chain (clean_musicxml) when multiple producers can emit
-   it; an `edits.py` instance patch only for genuine one-off performance
-   judgment. The tie-stub fix needed both a producer fix AND the final
-   invariant (8 stubs came from a second producer).
-3. **Verify the region, not the patch**: after any fix, re-audit the edited
-   bar ± 1 **in BOTH staves** and the figure's whole family against the full
-   sanity checklist (stubs, ghosts, IOI consistency, family-skeleton
-   agreement, balance), and re-run the whole-piece class sweep to zero. A
-   performance defect (drag, rush) is almost always two-handed — Mirrors
-   bar 7's treble was shifted onto the family skeleton while the bass,
-   dragged identically, was left behind for another ear pass.
-4. `clean_musicxml --source generated` now enforces the no-one-slot-tie-stub
-   invariant (implemented; plan adds its unit test). `score_query` gains a
-   `sweep` subcommand bundling the class detectors so step 1/3 is one
-   command.
-
-## Addendum 9 (2026-07-18): token-efficiency — every mechanical operation gets a tool
-
-Audit of this session's most token-expensive operations, and the tool that
-replaces each. Goal: the model reads compact digests and makes judgments;
-scripts do everything mechanical.
-
-| Expensive operation (as performed this session) | Replacement |
+| Action | Path |
 |---|---|
-| Re-typing the 8-step rebuild chain (~20-line bash, ~10×, with per-piece args like `--beats-shift 13.754` repeated from memory) | **`scripts/rebuild_score.py <piece-dir>`** — one command runs quantize→post→clean_musicxml→edits.py→mscz→finish_score→exports→verify from a per-piece **`piece.json` manifest** (key, time-sig, beats file, shifts, title/credits, anacrusis pad, flags). The manifest is written once at first delivery; every re-delivery is one call. Kills both the token cost and the retyped-argument bug class. |
-| Bar-numbering correspondence fumbles (printed ↔ XML ↔ quantize ↔ grid-beat ↔ seconds; three off-by-one incidents) | `score_query map` (Addendum 5) |
-| Inline aligned engraved-vs-played dumps (~8×) | `score_query bar` (Addendum 5) |
-| Inline family comparisons (~5×) | `score_query family` (Addendum 5) |
-| Whole-piece defect-class sweeps (stubs, ghosts, arpeggio spreads — bespoke scripts each time) | `score_query sweep` (Addendum 8) |
-| Grid diagnostics and repair assembly (fit tables, period dumps, free scans, splice bookkeeping) | `grid_surgery diagnose` / `repair` (base spec) |
-| PDF page reads for layout sanity (image tokens; the one-bar-page defect was found by eye) | **`score_query layout`** — bars-per-page/system distribution computed from the .mscz (flags orphan pages, stale breaks, label leaks numerically). Full-page image reads remain only for the final visual sign-off, first/busiest/last page. |
-| Quantize-summary spelunking (grep/json pipelines retyped per run) | `rebuild_score.py` persists every stage summary to `output/<slug>/reports/` and prints one compact combined digest designed for model reading. |
+| Create | `scripts/grid_surgery.py`, `scripts/test_grid_surgery.py` |
+| Create | `scripts/score_query.py`, `scripts/test_score_query.py` |
+| Create | `scripts/rebuild_score.py` (+ per-piece `piece.json`) |
+| Create | `scripts/finish_score.py`, `scripts/test_finish_score.py` (renames; old files deleted) |
+| Create | `.claude/skills/grid-surgery/SKILL.md` |
+| Rename | `scripts/musescore_pedal_lib.py` → `scripts/musescore_lib.py` |
+| Modify | `scripts/transcription_cleanup.py` (§3.2; extract shared nudge) |
+| Modify | `scripts/clean_musicxml.py` (stub-invariant unit test) |
+| Modify | `.claude/skills/cleanup-score/SKILL.md`, `.claude/skills/transcribe/SKILL.md` (tier dispatch per §1, tool calls per §3) |
+| Modify | `CLAUDE.md`, `README.md` (new tools, renames, gotchas) |
 
-Holistic-fix reminder codified: `score_query bar`/`family` always emit BOTH
-staves — single-staff views were the mechanical cause of the one-staff fix
-in Addendum 8's example.
+## 5. Testing
 
-## Addendum 10 (2026-07-18): model tiering — subagents matched to reasoning load
+Synthetic fixtures throughout (constructed MIDIs with known defects):
+- grid_surgery: a known dotted-eighth hop span and a known rit tail —
+  diagnose flags them, a plan repairs them, re-probe clean; plan-validation
+  errors (overlap, untouched-region regression).
+- beats smoothing: jittered DP output → smoothed fit ≥ raw, period jumps
+  bounded; coverage: onsets before beat 0 → prepended pickup beats.
+- quantize: IOI re-seat (the Mirrors bar-6 pattern), chord-brush drop (with
+  the family-voicing exception), out-of-grid warning.
+- clean --keep-window (notes + CC64 + shift report), verify --audio-window.
+- clean_musicxml: one-slot stub collapse unit test.
+- score_query: map round-trip on a pickup piece; family finds a transposed
+  rhythm sibling; sweep detects each planted defect class; layout flags a
+  planted orphan page.
+- rebuild_score: manifest round-trip reproduces byte-identical .musicxml on
+  a fixture piece with an edits.py.
 
-The pipeline actively dispatches subagents by task complexity instead of
-running everything on the strongest model:
+## 6. Out of scope
 
-- **Haiku — pure execution.** Anything that is "run the script, relay the
-  compact digest": `rebuild_score.py` invocations, bake-off candidate
-  builds, verify runs, `score_query` sweeps, export/format conversions,
-  test-suite runs. No interpretation beyond pass/fail relay.
-- **Sonnet — rubric-guided judgment.** Steps with clear decision rubrics:
-  ground-truth lookup and key/enharmonic choice (lint decides), clean-probe
-  bake-off verdicts (fit numbers + windows, rules from the skill), PDF
-  visual page checks against the checklist, CLEANUP_NOTES drafting from the
-  stage digests.
-- **Opus — default orchestrator.** Runs a piece end-to-end: sequences the
-  stages, interprets diagnostics, decides when a probe result needs surgery,
-  writes surgery plans for textbook cases (level hop with clean seams),
-  performs targeted ear-feedback diagnosis when the defect class is known.
-- **Fable — heavy lifting only.** Novel failure modes (a probe/diagnosis
-  that doesn't match any known class), root-causing new defect classes into
-  code fixes, multi-constraint grid surgery (phase-ambiguous spans, hybrid
-  lattice design), and spec/code evolution. If Opus's loop stalls twice on
-  the same defect, it escalates to Fable rather than iterating.
-
-Mechanics: the `transcribe`/`cleanup-score` skills name the tier per step;
-dispatch uses subagents with explicit model selection. The session-level
-model (the user's chat) stays the escalation point and reviews deliverables;
-the tiers do the volume. Combined with Addendum 9, the target profile is:
-Haiku executes, Sonnet reads digests against rubrics, Opus thinks per piece,
-Fable thinks per new problem.
-
-## Out of scope (YAGNI)
-
-- Workflow-tool multi-agent orchestration (bake-off parallelism is already
-  cheap in bash; diagnosis is sequential reasoning)
-- Changes to quantize/post
-- Automatic classification of flagged windows in the script (that judgment is
-  the model's job by design)
-- Time-signature changes / non-4-beat bars in the parity logic (all pipeline
-  pieces so far are engraved in a single meter; revisit if a 3/4 piece needs
-  surgery)
+- Workflow-tool multi-agent orchestration beyond the tier dispatch in §1.
+- Changes to Transkun, prepare_audio, or the download stage.
+- Automatic classification of flagged windows inside scripts (model's job).
+- Non-4/4 parity logic in grid surgery (revisit when a non-4/4 piece needs
+  surgery).
+- Sub-bar repeat-align auto-fixes (v2; `score_query family` provides the
+  evidence for manual ones now).
