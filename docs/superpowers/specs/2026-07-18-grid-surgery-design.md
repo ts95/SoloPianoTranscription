@@ -281,6 +281,55 @@ longer describes it. Restructure during implementation:
 - All pipeline commands, skills, CLAUDE.md and README references update to
   `finish_score.py` in the same delivery — no transition period, no alias.
 
+## Addendum 5 (2026-07-18): the ear-feedback loop is a pipeline stage, with purpose-built query tools
+
+The Mirrors session established the working pattern: **the pipeline does its
+best autonomously; the user then reports what sounds wrong ("bar 6–7 is
+weird", "the arpeggios don't sound right", "the first pedal is too long");
+the model does targeted analysis of exactly those spots with the raw MIDI
+and all tools, root-causes, fixes, and re-delivers.** That loop found three
+genuine code bugs in one pass (repeat-align windows straddling barlines in
+pickup pieces; arpeggio marks firing on ordinary 40 ms hand asynchrony; the
+anacrusis measure getting a full-bar pedal span). It becomes a standing
+stage:
+
+- cleanup-score's wrap-up explicitly invites targeted feedback in bar/time
+  terms, and CLEANUP_NOTES states that ear reports will be investigated
+  against the raw MIDI.
+- The grid-surgery skill gains a "targeted diagnosis" section: given a
+  bar/time report, (1) map it to grid beats and MIDI time, (2) produce the
+  aligned engraved-vs-played diff for the span, (3) check whether the defect
+  recurs at similar bars (the repeat family), (4) discriminate performance
+  vs pipeline (a defect that recurs at every family instance identically is
+  the performance; one that differs from clean instances is the pipeline),
+  (5) fix code (with regression test) or the piece, then re-deliver.
+
+**Token-efficient purpose-built tools** (the session's hand-written inline
+analyses, hardened into one CLI — `scripts/score_query.py`):
+
+- `map <score> <beats.json> <bar-or-time>` — the printed-bar ↔ XML-measure ↔
+  quantize-window ↔ grid-beat ↔ MIDI-second ↔ audio-second correspondence
+  table for a span. (Getting this mapping wrong by one cost more tokens than
+  any other single mistake in the session — three different numbering frames
+  exist, plus pickup exclusion.)
+- `bar <score> <cleaned.mid> <beats.json> <n>[-<m>]` — per-bar aligned diff:
+  engraved elements (offset, duration, pitches, ties, marks) against played
+  onsets (beat position, nearest slot, deviation, velocity, raw duration),
+  one compact table per bar.
+- `family <score> <n>` — find the bar's repeat family (pitch-multiset
+  similarity, reusing repeat_align's matcher) and print the instances'
+  engraved rhythms side by side with divergences highlighted.
+- All output is compact fixed-width text designed to be read by the model —
+  no JSON envelopes, no prose.
+
+These are deterministic, reuse existing internals (`grid_fit_probe`,
+`repeat_align`'s matching, music21 parsing), and replace the ~10 bespoke
+inline scripts this session wrote for the same purposes.
+
+Regression tests added by this addendum's bug fixes (already in code, plan
+must keep them): bar-true repeat-align windows on pickup pieces, the 90 ms
+arpeggio threshold, irregular-measure pedal ticks.
+
 ## Out of scope (YAGNI)
 
 - Workflow-tool multi-agent orchestration (bake-off parallelism is already
