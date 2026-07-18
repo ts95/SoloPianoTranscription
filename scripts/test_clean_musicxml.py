@@ -62,7 +62,32 @@ def test_omr_mode_keeps_legacy_behavior():
     print("ok: omr mode preserves the original OCR cleanup")
 
 
+def test_one_slot_tie_stub_collapsed():
+    import xml.etree.ElementTree as ET
+    from clean_musicxml import clean_one_slot_tie_stubs
+    measure = ET.fromstring("""
+    <measure number="3">
+      <attributes><divisions>4</divisions></attributes>
+      <note><pitch><step>C</step><octave>5</octave></pitch>
+        <duration>4</duration><tie type="start"/>
+        <notations><tied type="start"/></notations></note>
+      <note><pitch><step>C</step><octave>5</octave></pitch>
+        <duration>1</duration><tie type="stop"/>
+        <notations><tied type="stop"/></notations></note>
+      <note><rest/><duration>3</duration></note>
+    </measure>""")
+    log = []
+    n = clean_one_slot_tie_stubs([measure], log)
+    assert n == 1, f"collapsed {n}"
+    notes = measure.findall('note')
+    assert notes[0].find("tie") is None, "tie-start not stripped"
+    assert notes[1].find('rest') is not None, "stub not converted to rest"
+    assert notes[1].find('pitch') is None
+    print("ok: one-slot tie stub collapsed to rest")
+
+
 if __name__ == "__main__":
     test_generated_preserves_title_and_ornaments()
     test_omr_mode_keeps_legacy_behavior()
+    test_one_slot_tie_stub_collapsed()
     print("all clean_musicxml tests passed")
