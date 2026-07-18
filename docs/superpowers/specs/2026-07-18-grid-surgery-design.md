@@ -158,6 +158,10 @@ pointer to this skill.
   plan-validation error cases (overlap, regression)
 - Create: `scripts/finish_score.py` — rename/absorption of
   `apply_harmony_pedal.py` (see Addendum 4); `apply_harmony_pedal.py` deleted
+- Create: `scripts/rebuild_score.py` + per-piece `piece.json` manifest
+  (Addendum 9) — the one-command chain driver
+- Create: `scripts/score_query.py` — `map` / `bar` / `family` / `sweep` /
+  `layout` (Addenda 5, 8, 9); all views two-staff by default
 - Rename: `scripts/musescore_pedal_lib.py` → `scripts/musescore_lib.py`
 - Create: `.claude/skills/grid-surgery/SKILL.md`
 - Modify: `scripts/transcription_cleanup.py` — extract the nudge from
@@ -446,6 +450,58 @@ copied). Standing doctrine for every ear report from now on:
    invariant (implemented; plan adds its unit test). `score_query` gains a
    `sweep` subcommand bundling the class detectors so step 1/3 is one
    command.
+
+## Addendum 9 (2026-07-18): token-efficiency — every mechanical operation gets a tool
+
+Audit of this session's most token-expensive operations, and the tool that
+replaces each. Goal: the model reads compact digests and makes judgments;
+scripts do everything mechanical.
+
+| Expensive operation (as performed this session) | Replacement |
+|---|---|
+| Re-typing the 8-step rebuild chain (~20-line bash, ~10×, with per-piece args like `--beats-shift 13.754` repeated from memory) | **`scripts/rebuild_score.py <piece-dir>`** — one command runs quantize→post→clean_musicxml→edits.py→mscz→finish_score→exports→verify from a per-piece **`piece.json` manifest** (key, time-sig, beats file, shifts, title/credits, anacrusis pad, flags). The manifest is written once at first delivery; every re-delivery is one call. Kills both the token cost and the retyped-argument bug class. |
+| Bar-numbering correspondence fumbles (printed ↔ XML ↔ quantize ↔ grid-beat ↔ seconds; three off-by-one incidents) | `score_query map` (Addendum 5) |
+| Inline aligned engraved-vs-played dumps (~8×) | `score_query bar` (Addendum 5) |
+| Inline family comparisons (~5×) | `score_query family` (Addendum 5) |
+| Whole-piece defect-class sweeps (stubs, ghosts, arpeggio spreads — bespoke scripts each time) | `score_query sweep` (Addendum 8) |
+| Grid diagnostics and repair assembly (fit tables, period dumps, free scans, splice bookkeeping) | `grid_surgery diagnose` / `repair` (base spec) |
+| PDF page reads for layout sanity (image tokens; the one-bar-page defect was found by eye) | **`score_query layout`** — bars-per-page/system distribution computed from the .mscz (flags orphan pages, stale breaks, label leaks numerically). Full-page image reads remain only for the final visual sign-off, first/busiest/last page. |
+| Quantize-summary spelunking (grep/json pipelines retyped per run) | `rebuild_score.py` persists every stage summary to `output/<slug>/reports/` and prints one compact combined digest designed for model reading. |
+
+Holistic-fix reminder codified: `score_query bar`/`family` always emit BOTH
+staves — single-staff views were the mechanical cause of the one-staff fix
+in Addendum 8's example.
+
+## Addendum 10 (2026-07-18): model tiering — subagents matched to reasoning load
+
+The pipeline actively dispatches subagents by task complexity instead of
+running everything on the strongest model:
+
+- **Haiku — pure execution.** Anything that is "run the script, relay the
+  compact digest": `rebuild_score.py` invocations, bake-off candidate
+  builds, verify runs, `score_query` sweeps, export/format conversions,
+  test-suite runs. No interpretation beyond pass/fail relay.
+- **Sonnet — rubric-guided judgment.** Steps with clear decision rubrics:
+  ground-truth lookup and key/enharmonic choice (lint decides), clean-probe
+  bake-off verdicts (fit numbers + windows, rules from the skill), PDF
+  visual page checks against the checklist, CLEANUP_NOTES drafting from the
+  stage digests.
+- **Opus — default orchestrator.** Runs a piece end-to-end: sequences the
+  stages, interprets diagnostics, decides when a probe result needs surgery,
+  writes surgery plans for textbook cases (level hop with clean seams),
+  performs targeted ear-feedback diagnosis when the defect class is known.
+- **Fable — heavy lifting only.** Novel failure modes (a probe/diagnosis
+  that doesn't match any known class), root-causing new defect classes into
+  code fixes, multi-constraint grid surgery (phase-ambiguous spans, hybrid
+  lattice design), and spec/code evolution. If Opus's loop stalls twice on
+  the same defect, it escalates to Fable rather than iterating.
+
+Mechanics: the `transcribe`/`cleanup-score` skills name the tier per step;
+dispatch uses subagents with explicit model selection. The session-level
+model (the user's chat) stays the escalation point and reviews deliverables;
+the tiers do the volume. Combined with Addendum 9, the target profile is:
+Haiku executes, Sonnet reads digests against rubrics, Opus thinks per piece,
+Fable thinks per new problem.
 
 ## Out of scope (YAGNI)
 
