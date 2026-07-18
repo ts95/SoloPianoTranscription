@@ -59,6 +59,24 @@ def write_midi_pedal(midi_path, get_pedals_fn, measure_numbers, ticks_map,
     return len(events) // 2
 
 
+def strip_beam_modes(root):
+    """Remove every explicit <BeamMode> so MuseScore auto-beams by meter.
+
+    MuseScore's MusicXML import pins each stem's beaming: music21's beam pass
+    leaves holes (and the import turns every beam-less stem into a forced
+    BeamMode "no" break), which engraves runs of detached flagged notes that
+    should be beamed. Generated scores never carry intentional beam breaks,
+    so auto-beam authority is always right for them.
+    """
+    removed = 0
+    for parent in root.iter():
+        for child in [c for c in parent if c.tag == "BeamMode"]:
+            parent.remove(child)
+            removed += 1
+    print(f"beam cleanup: {removed} forced BeamMode elements removed "
+          "(MuseScore auto-beams by meter)")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("mscz")
@@ -99,7 +117,8 @@ def main():
     base_cfg = cfg
     cfg = lambda mnum: [] if mnum in empty else base_cfg(mnum)
 
-    add_pedals(args.mscz, cfg, staff_id=args.staff)
+    add_pedals(args.mscz, cfg, staff_id=args.staff,
+               post_process=strip_beam_modes)
 
     if args.midi:
         ordered = [r["number"] for r in results]

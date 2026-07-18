@@ -8,7 +8,7 @@ import tempfile
 
 import pretty_midi
 
-from apply_harmony_pedal import write_midi_pedal
+from apply_harmony_pedal import strip_beam_modes, write_midi_pedal
 from musescore_pedal_lib import make_syncopated_pedal_config
 
 
@@ -45,5 +45,20 @@ def test_cc64_from_schedule():
     print("ok: harmony pedal schedule lands as CC64 at the right seconds")
 
 
+def test_strip_beam_modes():
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(
+        "<Score><Staff><Measure><voice>"
+        "<Chord><BeamMode>no</BeamMode><durationType>16th</durationType></Chord>"
+        "<Chord><BeamMode>begin16</BeamMode><durationType>16th</durationType></Chord>"
+        "<Chord><durationType>eighth</durationType></Chord>"
+        "</voice></Measure></Staff></Score>")
+    strip_beam_modes(root)
+    assert not list(root.iter("BeamMode")), "BeamMode elements survived"
+    assert len(list(root.iter("Chord"))) == 3, "a Chord went missing"
+    print("ok: strip_beam_modes removes every forced BeamMode, keeps chords")
+
+
 if __name__ == "__main__":
     test_cc64_from_schedule()
+    test_strip_beam_modes()
