@@ -330,6 +330,33 @@ Regression tests added by this addendum's bug fixes (already in code, plan
 must keep them): bar-true repeat-align windows on pickup pieces, the 90 ms
 arpeggio threshold, irregular-measure pedal ticks.
 
+## Addendum 6 (2026-07-18): IOI-ratio consistency — equal played intervals must engrave as equal values
+
+Second ear pass on Mirrors bar 6: the treble figure should read dotted-8th,
+16th, 16th but engraved as dotted-8th, 8th, 16th. The played onsets sat at
+beat positions 0.88 / 1.15 / 1.42 — **equally spaced** (IOIs 0.27, 0.27),
+dragged ~0.15 behind the grid as a group. Per-onset snapping sent each to its
+independently-nearest slot (0.75 / 1.25 / 1.5), splitting the equal intervals
+into an 8th + 16th. This violates the classic quantization principle (Desain
+& Honing): inter-onset *ratios* carry the rhythm, not absolute positions.
+
+New deterministic post-snap repair in `quantize` (with regression test on the
+bar-6 pattern):
+
+- Detect runs of ≥3 successive same-staff onsets whose played IOIs are
+  near-equal (max/min ≤ ~1.25) but whose snapped IOIs are unequal (some
+  differing by ≥2×).
+- Re-seat the run: anchor on the run's best-snapped onset, lay the remaining
+  onsets at the run's median snapped IOI (choosing the grid value nearest the
+  median played IOI), respecting the bar and neighbouring onsets.
+- Gate conservatively: only fire when the re-seated positions stay within
+  ~0.2 beat of the played onsets (an agogic drag/rush, not a rewrite), and
+  report every application in the summary (`ioi_reseated` count + bars) for
+  CLEANUP_NOTES.
+
+This complements repeat alignment (which needs family evidence): IOI
+consistency is *self-evidence* — it fires on figures that appear only once.
+
 ## Out of scope (YAGNI)
 
 - Workflow-tool multi-agent orchestration (bake-off parallelism is already
