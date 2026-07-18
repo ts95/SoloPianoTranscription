@@ -27,6 +27,8 @@ def run(cmd, report_path=None, quiet_ok=True):
     if report_path and r.stdout:
         with open(report_path, "w") as f:
             f.write(r.stdout)
+            if r.stderr:
+                f.write("\n--- stderr ---\n" + r.stderr)
     if r.returncode != 0:
         sys.stderr.write(r.stdout + r.stderr)
         raise SystemExit(f"stage failed: {' '.join(map(str, cmd))}")
@@ -67,6 +69,10 @@ def main():
          "--key", man["key"], "--time-sig", man["time_sig"]]
     if man.get("dynamics_from_cleaned_midi"):
         p += ["--dynamics-from", S + ".cleaned.mid"]
+    p += ["--beats", os.path.join(d, man["beats"]),
+          "--beats-shift", str(man["beats_shift"])]
+    if js.get("offset_shift_beats"):
+        p += ["--offset-shift", str(js["offset_shift_beats"])]
     p += man.get("post_flags", [])
     out = run(p, os.path.join(reports, "post.json"))
     digest["post_lint"] = json.loads(out).get("lint", {}).get("verdict")

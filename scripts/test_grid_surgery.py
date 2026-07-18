@@ -8,7 +8,7 @@ import pretty_midi
 
 sys.path.insert(0, os.path.dirname(__file__))
 from grid_surgery import diagnose  # noqa: E402
-from grid_surgery import repair  # add to imports
+from grid_surgery import repair  # noqa: E402
 
 
 def make_hop_fixture(d):

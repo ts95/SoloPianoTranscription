@@ -2120,11 +2120,12 @@ def cmd_beats(args):
     }
     probe_mid = args.refine or args.from_midi
     if probe_mid:
-        # refine already shifted onsets internally; probe in the audio domain both ways
+        # refine already shifted onsets internally; probe in the audio domain both
+        # ways so refine and from-midi candidates are scored by the SAME estimator
         probe = grid_fit_probe(probe_mid, beats, args.midi_shift)
         report.update(probe)
-    if args.from_midi:
-        report["raw_fit"] = raw_fit
+        if args.from_midi:
+            report["raw_fit"] = raw_fit
     elif onset_grid_fit is not None:
         report["onset_grid_fit"] = round(onset_grid_fit, 3)
     if args.bpm_hint and periods:

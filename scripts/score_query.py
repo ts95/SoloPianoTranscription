@@ -22,8 +22,9 @@ def load_piece(piece_dir):
 def bar_to_beats(man, printed_bar):
     """printed bar N -> (grid beat range, quantize measure number)."""
     qm = printed_bar + (1 if man.get("anacrusis") else 0)
-    b0 = 4 * (qm - 1)
-    return (b0, b0 + 4), qm
+    bpb = int(man["time_sig"].split("/")[0])
+    b0 = bpb * (qm - 1)
+    return (b0, b0 + bpb), qm
 
 
 def bar_mapping(piece_dir, printed_bar):
@@ -52,7 +53,8 @@ def bar_diff(piece_dir, printed_bar):
     shift = man["beats_shift"]
     sc = converter.parse(os.path.join(d, slug + ".musicxml"))
     lines = [f"== printed bar {printed_bar} (quantize m{qm}, "
-             f"beats {b0}-{b1}, audio {beats[b0]:.2f}-{beats[b1]:.2f}s) =="]
+             f"beats {b0}-{b1}, audio {beats[b0]:.2f}-"
+             f"{beats[min(b1, len(beats) - 1)]:.2f}s) =="]
     for pi, part in enumerate(sc.parts):
         m = part.measure(qm)
         row = []
