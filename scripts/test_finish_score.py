@@ -1,6 +1,6 @@
 """Regression test: harmony-pedal schedule -> CC64 in a MIDI.
 
-Run: .venv/bin/python scripts/test_midi_pedal.py
+Run: .venv/bin/python scripts/test_finish_score.py
 """
 import json
 import os
@@ -8,8 +8,8 @@ import tempfile
 
 import pretty_midi
 
-from apply_harmony_pedal import make_anacrusis, strip_beam_modes, write_midi_pedal
-from musescore_pedal_lib import make_syncopated_pedal_config
+from finish_score import make_anacrusis, strip_beam_modes, write_midi_pedal
+from musescore_lib import make_syncopated_pedal_config
 
 
 def test_cc64_from_schedule():
@@ -90,7 +90,24 @@ def test_make_anacrusis():
     print("ok: anacrusis strips pad rests, shrinks measure, keeps pickup content")
 
 
+def test_strip_layout_and_labels():
+    import xml.etree.ElementTree as ET
+    from finish_score import strip_layout_and_labels
+    root = ET.fromstring(
+        "<museScore><Score>"
+        "<Part><Instrument><longName>Piano</longName>"
+        "<shortName>Pno</shortName></Instrument></Part>"
+        "<Staff id=\"1\"><Measure><LayoutBreak><subtype>line</subtype>"
+        "</LayoutBreak><voice/></Measure></Staff>"
+        "</Score></museScore>")
+    strip_layout_and_labels(root)
+    assert not list(root.iter("LayoutBreak"))
+    assert not list(root.iter("longName")) and not list(root.iter("shortName"))
+    print("ok: stale layout breaks and instrument labels stripped")
+
+
 if __name__ == "__main__":
     test_cc64_from_schedule()
     test_strip_beam_modes()
     test_make_anacrusis()
+    test_strip_layout_and_labels()

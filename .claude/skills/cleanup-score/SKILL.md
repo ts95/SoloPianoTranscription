@@ -99,7 +99,7 @@ rm 'output/<slug>/<slug>.tmp.musicxml'
 # -> .mscz, then harmony-aware pedaling on it, then regenerate .musicxml + .pdf FROM
 #    the pedaled .mscz so all three formats agree.
 "$MSCORE" 'output/<slug>/<slug>.musicxml' -o 'output/<slug>/<slug>.mscz'
-.venv/bin/python scripts/apply_harmony_pedal.py 'output/<slug>/<slug>.mscz'
+.venv/bin/python scripts/finish_score.py 'output/<slug>/<slug>.mscz'
 "$MSCORE" 'output/<slug>/<slug>.mscz' -o 'output/<slug>/<slug>.musicxml'
 "$MSCORE" 'output/<slug>/<slug>.mscz' -o 'output/<slug>/<slug>.pdf'
 ```
@@ -114,9 +114,9 @@ Multi-tempo / multi-key pieces: with `--beats`, sustained tempo plateaus (>12% f
 
 `post` does the canned notation fixes: enharmonic respelling toward the key, merging fragmented tied chains, moving clearly out-of-range notes to the correct staff, **bass-staff clef changes** (treble clef for sustained high left-hand runs ≥3 bars, bass otherwise — `bass_clef_changes` in the summary), and **dynamics from MIDI velocities** — level marks (pp–ff) at changes plus cresc./dim. hairpins where the velocity profile trends steadily. Check `dynamics_preview` in the analyze report first; if the proposed levels look like noise (e.g. constant-velocity synthesized audio), drop `--dynamics-from`.
 
-**Pedaling (rule)**: pedal is added from the *engraved harmony*, not CC64. `apply_harmony_pedal.py` lays one syncopated (legato) pedal per bar with a mid-bar re-pedal where the bass harmony changes (`analyze_pedaling.py` decides). Transkun's CC64 is only binary (0/127) and under-segments fast re-pedaling, so it does not track harmony — do **not** use `post --pedal-from` for the engraved score. (CC64 still informs duration decisions in `quantize`.) After pedaling the `.mscz`, regenerate `.musicxml` and `.pdf` from it so all formats agree.
+**Pedaling (rule)**: pedal is added from the *engraved harmony*, not CC64. `finish_score.py` lays one syncopated (legato) pedal per bar with a mid-bar re-pedal where the bass harmony changes (`analyze_pedaling.py` decides). Transkun's CC64 is only binary (0/127) and under-segments fast re-pedaling, so it does not track harmony — do **not** use `post --pedal-from` for the engraved score. (CC64 still informs duration decisions in `quantize`.) After pedaling the `.mscz`, regenerate `.musicxml` and `.pdf` from it so all formats agree.
 
-**Performed CC64 stays in the cleaned MIDI (rule)**: `apply_harmony_pedal.py --midi/--beats` *replaces* the cleaned MIDI's sustain with the harmony schedule — use that only when Transkun under-detected the pedal (synth/washy sources; check `pedal down fraction` against what you hear). For a real performance the transcribed CC64 is part of the faithful capture: leave the cleaned MIDI alone (if it was overwritten, re-run `clean` to restore it).
+**Performed CC64 stays in the cleaned MIDI (rule)**: `finish_score.py --midi/--beats` *replaces* the cleaned MIDI's sustain with the harmony schedule — use that only when Transkun under-detected the pedal (synth/washy sources; check `pedal down fraction` against what you hear). For a real performance the transcribed CC64 is part of the faithful capture: leave the cleaned MIDI alone (if it was overwritten, re-run `clean` to restore it).
 
 ## 5. Bespoke repair pass (model judgment)
 

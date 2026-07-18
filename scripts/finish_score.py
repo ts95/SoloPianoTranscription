@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
-"""Replace a score's pedaling with harmony-aware legato pedal marks.
+"""Finish a quantized .mscz: anacrusis, harmony pedaling, layout/label hygiene.
 
-Reads the NOTATED harmony from the .mscz (bass pitch-class at beat 1 vs the
-half-bar) and lays one syncopated pedal per measure, split mid-bar where the
-harmony changes. This is independent of the transcriber's CC64, which is only
-binary (0/127) and under-segments fast re-pedaling, so it does not track the
-harmony. Edits the .mscz in place (the .bak the library writes is removed
-unless --keep-backup).
+Three passes, in order:
+1. Anacrusis (`--anacrusis PAD_BEATS`, optional): convert measure 1 from
+   quantize's padded pickup bar into a true short pickup measure.
+2. Harmony pedaling: reads the NOTATED harmony from the .mscz (bass
+   pitch-class at beat 1 vs the half-bar) and lays one syncopated pedal per
+   measure, split mid-bar where the harmony changes. This is independent of
+   the transcriber's CC64, which is only binary (0/127) and under-segments
+   fast re-pedaling, so it does not track the harmony.
+3. Hygiene: strips every forced <BeamMode> (MuseScore auto-beams by meter
+   instead — the MusicXML import pins music21's holey beaming and turns
+   beam-less stems into forced breaks), stale <LayoutBreak>s (frozen
+   page/system breaks break pagination after any content change), and
+   solo-piano instrument long/short names (label leaks from MusicXML
+   roundtrips).
 
-Usage: apply_harmony_pedal.py <file.mscz> [--staff 2] [--keep-backup]
+Edits the .mscz in place (the .bak the library writes is removed unless
+--keep-backup).
+
+Usage: finish_score.py <file.mscz> [--staff 2] [--keep-backup]
 """
 import argparse
 import os
@@ -16,7 +27,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from musescore_pedal_lib import (
+from musescore_lib import (
     extract_mscz, extract_measure_data, add_pedals, make_syncopated_pedal_config,
     repackage_mscz, _find_score_staves,
 )
@@ -152,6 +163,25 @@ def strip_beam_modes(root):
           "(MuseScore auto-beams by meter)")
 
 
+def strip_layout_and_labels(root):
+    """Remove stale LayoutBreaks (frozen page/system breaks break pagination
+    after any content change) and solo-piano instrument long/short names
+    (label leaks from MusicXML roundtrips). Auto-layout is our default,
+    exactly like auto-beaming."""
+    n = 0
+    for parent in root.iter():
+        for child in [c for c in parent if c.tag == "LayoutBreak"]:
+            parent.remove(child)
+            n += 1
+    labels = 0
+    for inst in root.iter("Instrument"):
+        for tag in ("longName", "shortName"):
+            for el in inst.findall(tag):
+                inst.remove(el)
+                labels += 1
+    print(f"layout cleanup: {n} LayoutBreaks, {labels} instrument labels removed")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("mscz")
@@ -199,8 +229,11 @@ def main():
     base_cfg = cfg
     cfg = lambda mnum: [] if mnum in empty else base_cfg(mnum)
 
-    add_pedals(args.mscz, cfg, staff_id=args.staff,
-               post_process=strip_beam_modes)
+    def _hygiene(root):
+        strip_beam_modes(root)
+        strip_layout_and_labels(root)
+
+    add_pedals(args.mscz, cfg, staff_id=args.staff, post_process=_hygiene)
 
     if args.midi:
         ordered = [r["number"] for r in results]

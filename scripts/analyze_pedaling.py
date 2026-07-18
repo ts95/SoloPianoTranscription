@@ -22,7 +22,7 @@ import os
 import sys
 import shutil
 
-from musescore_pedal_lib import (
+from musescore_lib import (
     extract_mscz, extract_measure_data, find_mscx_in_dir,
     PC_NAMES, get_time_sig_ticks, _HALF_BAR_OK,
 )
