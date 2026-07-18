@@ -15,7 +15,7 @@ Input: a piece directory `output/<slug>/` (or any transcription `.mid`). Require
 
 Core principle: fix what is decidable from the data (or from published facts about the piece); anything that requires hearing the recording gets **flagged, not changed**.
 
-Tools: `scripts/transcription_cleanup.py` (run with `.venv/bin/python`), mscore at `/Applications/MuseScore 4.app/Contents/MacOS/mscore`, music21 in the venv for bespoke fixes.
+Tools: `scripts/transcription_cleanup.py` (run with `.venv/bin/python`), mscore at `/Applications/MuseScore 4.app/Contents/MacOS/mscore`, music21 in the venv for bespoke fixes. Dispatch per the grid-surgery skill's tier list (Haiku executes scripts and relays digests, Sonnet does rubric-guided verdicts like bake-off comparisons and PDF checklist passes, Opus orchestrates the judgment calls below, Fable only for novel failures).
 
 ## 1. Ground-truth lookup (web)
 
@@ -57,7 +57,7 @@ Interpret the JSON with musical judgment:
   - `weak_windows` — **a good global fit can hide a localized failure**; any window listed here means the grid breaks somewhere specific (bad bridge, raced ritardando) even if the global number looks like a winner.
   - `level_hop_suspects` — windows where the tracker changed metrical level (period near 1/2, 3/4, 4/3, or 2× the global median). Continuous even-16th washes make level AND phase onset-ambiguous (every sub-multiple grid fits perfectly), so the DP can hop to the dotted-eighth layer for one section with barely a dent in the global fit. A deep genuine ritardando can also appear here — judge by whether periods *grow smoothly* (real rit) or *sit at a ratio* (hop).
 
-  A winner with clean windows ships as `beats.json` (keep the losers as `beats.<variant>.json` for reference). A winner with flagged windows needs a **hybrid repair**: keep its beats where the windows are clean, and rebuild the flagged span as a continuous lattice anchored on the last good downbeat (phase/level locked by *continuity* with the neighboring sections — the onsets cannot decide it there), nudged to local onsets; track a closing ritardando from the note-cluster spacing (beat = 4 × local 16th gap). Re-probe the spliced grid (`grid_fit_probe` in the script is importable) until windows are clean, and put the surgery in CLEANUP_NOTES.
+  A winner with clean windows ships as `beats.json` (keep the losers as `beats.<variant>.json` for reference). A winner with flagged windows or fit below ~0.99 goes to the `grid-surgery` skill.
 - **Thresholds**: review the `artifact_candidates`/`ghost_candidates` samples. Be conservative: when a candidate might be a real grace note or ornament, keep it (raise `--vel-ratio` down / `--min-dur` down) and flag it instead.
 
 ## 3. Clean the MIDI
@@ -103,6 +103,8 @@ rm 'output/<slug>/<slug>.tmp.musicxml'
 "$MSCORE" 'output/<slug>/<slug>.mscz' -o 'output/<slug>/<slug>.musicxml'
 "$MSCORE" 'output/<slug>/<slug>.mscz' -o 'output/<slug>/<slug>.pdf'
 ```
+
+Once the choices above are settled (key, time-sig, beats file, shift, metadata, anacrusis, dynamics source), write `output/<slug>/piece.json` (spec §3.4 schema: `slug`, `key`, `time_sig`, `beats`, `beats_shift`, `title`, `composer`, `performer`, `arranger`, `anacrusis`, `dynamics_from_cleaned_midi`, `quantize_flags`, `post_flags`) and run `scripts/rebuild_score.py <piece-dir>` for the score chain — it re-runs quantize → post → clean_musicxml → `edits.py` (if present) → mscore → `finish_score.py` → export `.musicxml`/`.pdf` → `verify` in one command, persisting every stage summary under `output/<slug>/reports/` and printing a combined digest. Every re-delivery (a repair, a config tweak) goes through `rebuild_score.py` from then on — never re-type or hand-run the chain once `piece.json` exists.
 
 `quantize` chooses a subdivision per beat (binary or ternary — genuine triplets become real tuplets; swing is detected and notated straight with a "Swing" direction), merges same-slot notes into chords, assigns hands with a cost model (span/movement/register — handles crossings; `--split E3` forces a static threshold), and caps durations at the next onset — except lone melody/bass notes that clearly ring over other registers, which become a second voice in the staff (check `sustained_as_second_voice` in the summary). Duration decisions are **pedal-aware** (CC64): a rest under an active pedal is acoustically impossible (the strings ring), so under pedal a note rings to the next onset up to one bar — a once-per-bar bass note becomes a whole note, not quarter + rests (`--pedal-sustain bar`, default; `beat` keeps stabs short for grooves). Gaps longer than a bar stay short (no multi-bar drone), and pedal-up keeps the performed length (real silence stays rests). With `--beats` the grid is the tracked beat sequence (refined to MIDI onsets), so rubato and drift don't corrupt barlines, and persistent tempo deviations get `rit.`/`accel.`/`a tempo` text. Pass `--time-sig` so it can infer the **downbeat phase** from bass/harmony/agogic cues — if the piece starts mid-bar it opens bar 1 with rests and reports a pickup flag (always relay this to "verify by ear").
 
@@ -173,4 +175,4 @@ Three sections:
 
 ## 8. Report in chat
 
-Artifact paths plus the top human-attention items, so the user knows where to spend their listening time.
+Artifact paths plus the top human-attention items, so the user knows where to spend their listening time. Invite targeted feedback: the user reports bar/time spans that sound wrong; each report runs the grid-surgery skill's ear-feedback loop.

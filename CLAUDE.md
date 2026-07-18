@@ -16,6 +16,9 @@ Pipeline for transcribing solo piano performances from YouTube into editable she
 - `scripts/finish_score.py <file.mscz>` — finishes a quantized `.mscz`: harmony-aware legato pedaling from the engraved harmony (one pedal per bar, split at harmony changes), via `analyze_pedaling.py` + `musescore_lib.py`. Use instead of CC64-derived pedal, which is binary and doesn't track harmony. Also strips every forced `<BeamMode>` from the mscx so MuseScore auto-beams by meter (the MusicXML import pins music21's holey beaming and turns beam-less stems into forced breaks — detached flagged runs that should be beamed), stale `<LayoutBreak>`s (frozen page/system breaks that break pagination after any content change), and solo-piano instrument long/short names (label leaks from MusicXML roundtrips). `--midi <cleaned.mid> --beats <beats.json>` also writes the same schedule into the MIDI as CC64 (replacing the transcriber's under-detected sustain; assumes bar-phase 0 / no pickup) — **only for under-detected pedal**; a real performance's CC64 stays in the cleaned MIDI.
 - `scripts/clean_musicxml.py <file> --source generated` — final MusicXML cleanup (drops contradictory/duplicate dynamics, unpaired pedals); `--source generated` (default) skips OCR-only rules. `--source omr` for Audiveris input.
 - `scripts/simplify_score.py <in.musicxml> -o <out.musicxml>` — **on request only** (an arrangement edit, not part of the default pipeline): playability reduction for Synthesia-style stacked scores. Thins off-beat chord re-strikes under the per-bar pedal to melody/bass skeleton, reduces LH stacks the RH already voices, caps hand spans at an octave (drop pitch-class-doubled notes, else octave-fold — never loses a pitch class; ties untouched). Runs between `post` and `clean_musicxml`; keeps the original key-aware spelling. The cleaned MIDI stays the faithful capture.
+- `scripts/grid_surgery.py diagnose <cleaned.mid> <beats.json>` / `repair <plan.json>` — beat-grid diagnosis (windowed onset-fit probe, tempo map, free scans over flagged spans) and declarative repair (splice/lattice/tail-op surgery plans); used by the `grid-surgery` skill when a bake-off winner has flagged windows or fit below ~0.99.
+- `scripts/score_query.py map|bar|family|sweep|layout <piece-dir> ...` — compact fixed-width score queries for targeted by-ear fixes: bar↔time mapping, two-staff aligned engraved-vs-played diffs, sibling-bar (family) matching, piece-wide defect-class sweeps, and post-rebuild `.mscz` layout checks.
+- `scripts/rebuild_score.py <piece-dir>` — one-command re-delivery of a piece's score from its `piece.json` manifest: quantize → post → clean_musicxml → `edits.py` (if present) → mscore → `finish_score.py` → export `.musicxml`/`.pdf` → `verify`, with stage reports under `<piece-dir>/reports/`. The `.mscz` is a build product (sources: `.cleaned.mid` + `beats.json` + `piece.json` + `edits.py`) — never hand-edit it; change a source and rerun this.
 
 ## Output layout
 
@@ -33,6 +36,9 @@ output/<slug>/
 ├── beats.json        # audio beat-tracking (librosa) — drives rubato-aware quantization
 ├── clean_report.json # machine summary of the MIDI clean pass
 ├── verify.json       # per-bar score-vs-recording similarity (chroma DTW)
+├── piece.json        # rebuild manifest (key/time-sig/beats/metadata/flags) — source of truth for rebuild_score.py
+├── edits.py          # optional: per-piece surgical patch (music21), re-run by rebuild_score.py
+├── reports/          # per-stage rebuild_score.py output (quantize/post/clean_musicxml/edits/finish/verify)
 └── CLEANUP_NOTES.md  # what was decided automatically + the prioritized hand-off (finish by ear)
 ```
 
@@ -72,13 +78,16 @@ MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 "$MSCORE" 'output/<slug>/<slug>.mscz' -o 'output/<slug>/<slug>.pdf'
 ```
 
+Once the choices above (key/time-sig/beats/metadata/anacrusis) are settled, write `output/<slug>/piece.json` (the manifest schema in the design spec) and use `scripts/rebuild_score.py 'output/<slug>/'` for every subsequent re-delivery — it re-runs this whole chain (quantize → post → clean_musicxml → `edits.py` if present → mscore → `finish_score.py` → export → `verify`) in one command instead of hand-typing it again.
+
 ## Skills
 
 - `transcribe` — full pipeline from a YouTube URL; use for "transcribe this video" requests
 - `download-audio` — stage 1 only
 - `audio-to-midi` — stage 2 only (also works on local audio files the user provides). When the user's request is for a MIDI deliverable, always follow with `cleanup-score` in MIDI-only mode — a requested MIDI is delivered cleaned, never raw
 - `midi-to-musicxml` — stage 3 only (exports both .musicxml and .mscz)
-- `cleanup-score` — post-pipeline cleanup: web ground-truth lookup (key/meter), artifact removal, notation repair, velocity-derived dynamics/hairpins, `CLEANUP_NOTES.md` with verify-by-ear flags. Changes only what's decidable from data; never overwrites originals. Supports MIDI-only mode (steps 1–3, `.cleaned.mid` + notes, no MusicXML/.mscz) when the user wants just a cleaned MIDI.
+- `cleanup-score` — post-pipeline cleanup: web ground-truth lookup (key/meter), artifact removal, notation repair, velocity-derived dynamics/hairpins, `CLEANUP_NOTES.md` with verify-by-ear flags. Changes only what's decidable from data; never overwrites originals. Supports MIDI-only mode (steps 1–3, `.cleaned.mid` + notes, no MusicXML/.mscz) when the user wants just a cleaned MIDI. Ends by writing `piece.json`; re-deliveries go through `rebuild_score.py`.
+- `grid-surgery` — diagnoses and repairs beat-grid failures (level hops, lost pulse, untracked ritardandi) flagged by the grid bake-off, and runs the targeted by-ear fix loop (`score_query` map/bar/family/sweep/layout) for any "bar N sounds wrong" report on a delivered score. Carries the model-tier dispatch table (Haiku executes scripts, Sonnet does rubric checks, Opus orchestrates, Fable only for novel failures) referenced by the other skills.
 
 ## Notation sanity (reason about the score, don't just convert)
 
@@ -126,6 +135,7 @@ After producing any score, inspect it for statistical outliers — transcription
 - **Score metadata rule**: every generated `.musicxml`/`.mscz` must carry the piece metadata in its header via `quantize --title/--composer/--arranger/--performer` — title and original composer/artist always; arranger when it's an arrangement/cover with a known author; performer when the pianist is known. Only include roles that make sense for the piece.
 - **Enharmonic key spelling**: when the detected key has 6+ accidentals (A♭ minor, C♭ major, C♯ major…), quantize with the simpler enharmonic too and keep the spelling with the lower lint `printed_accidental_ratio` — Cry Me A River's A♭ minor (7 flats) scored 0.49 = PROBLEM; the same notes as G♯ minor (5 sharps) scored 0.38 = ok.
 - **Performed CC64 stays in the cleaned MIDI**: `finish_score.py --midi/--beats` *replaces* the cleaned MIDI's sustain with the harmony schedule — only for under-detected pedal (synth/washy sources). A real performance's transcribed CC64 is part of the faithful capture; if overwritten, re-run `clean` to restore it.
+- **Never feed an mscore-exported MusicXML back to mscore** — its layout freezes as `LayoutBreak`s and breaks pagination (sibling of the never-import-a-.mid rule); surgical edits go in `output/<slug>/edits.py` and re-run through `rebuild_score.py`.
 - music21 `makeMeasures()` does not split notes at barlines — always follow with `makeTies()`, or MuseScore rejects the overfull measures (exit 40).
 - music21 `makeMeasures()` attaches `Accidental('natural')` objects to notes; if they're not stripped before computing accidental display (`normalize_accidentals` in the cleanup script), the export prints an accidental on literally every note.
 - zsh does not word-split unquoted variables; don't stash multi-word commands in shell variables.

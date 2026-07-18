@@ -36,9 +36,11 @@ This takes a few minutes on CPU — run it in the background and wait for it; do
 
 ## Stage 3 — MIDI → score (the full cleanup flow)
 
-Follow the `cleanup-score` skill start to finish — it IS stage 3. "Run the pipeline" means the delivered score, not a raw conversion: ground-truth lookup (key/BPM), `clean`, the **grid bake-off** (build `--refine` and `--from-midi` candidates, compare `onset_grid_fit`, check `weak_windows`/`level_hop_suspects`, hybrid-repair a winner with flagged windows), `quantize --beats` → `post` → `clean_musicxml` → `.mscz` → harmony pedaling → regenerated `.musicxml`/`.pdf` from the pedaled `.mscz`, then `verify`, PDF visual inspection, and `CLEANUP_NOTES.md`.
+Follow the `cleanup-score` skill start to finish — it IS stage 3. "Run the pipeline" means the delivered score, not a raw conversion: ground-truth lookup (key/BPM), `clean`, the **grid bake-off** (build `--refine` and `--from-midi` candidates, compare `onset_grid_fit`, check `weak_windows`/`level_hop_suspects`; a winner with flagged windows or fit below ~0.99 goes to the `grid-surgery` skill), `quantize --beats` → `post` → `clean_musicxml` → `.mscz` → harmony pedaling (`finish_score.py`) → regenerated `.musicxml`/`.pdf` from the finished `.mscz`, then `verify`, PDF visual inspection, and `CLEANUP_NOTES.md`. The flow ends by writing `output/<slug>/piece.json` (spec §3.4 schema) — every re-delivery after that runs `scripts/rebuild_score.py output/<slug>/` instead of re-typing the chain.
 
 Non-negotiables carried by that skill: never feed a `.mid` to MuseScore; the lint verdict must be "ok" before delivering; every final `.mscz` gets a visually-inspected PDF; a real performance's CC64 stays in the cleaned MIDI.
+
+Dispatch stage work per the grid-surgery skill's model-tier table (Haiku executes scripts, Sonnet does rubric checks, Opus orchestrates, Fable only for novel failures).
 
 (For a quick single-file conversion outside the pipeline, the `midi-to-musicxml` skill still covers the minimal path.)
 
