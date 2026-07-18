@@ -1161,6 +1161,15 @@ def cmd_quantize(args):
     warp, beat_times, warp_base = None, None, 0
     if args.beats:
         beat_times = refine_beats(load_beat_times(args.beats, args.beats_shift), notes)
+        _first = notes[0].start
+        _last = max(n.start for n in notes)
+        if _first < beat_times[0] - 1e-6 or _last > beat_times[-1] + 1e-6:
+            print("WARNING: onsets outside the beat grid "
+                  f"({_first:.2f}..{_last:.2f}s vs grid "
+                  f"{beat_times[0]:.2f}..{beat_times[-1]:.2f}s) — notes "
+                  "before beat 0 get crammed into bar 1; rebuild the grid "
+                  "with coverage extension (beats --from-midi does this "
+                  "automatically now)", file=sys.stderr)
         warp = beat_warp(beat_times)
         periods = [b - a for a, b in zip(beat_times, beat_times[1:])]
         med_period = statistics.median(periods)
@@ -1728,6 +1737,72 @@ def track_beats_from_midi(mid_path, bpm_hint, lam=6.0, mu=1.0):
     return sorted(seq)
 
 
+def nudge_beats_to_onsets(beats, onsets, pin_start=False, pin_end=False,
+                          windows=(16, 12, 8, 6, 4)):
+    """Shrinking-window median-residual smoothing of a beat sequence onto
+    onsets (the refine second stage, shared by refine, DP smoothing and
+    grid-surgery repairs). Residuals are distances to the nearest 16th slot;
+    windowed medians follow drift while per-beat jitter cancels out."""
+    import bisect as _bisect
+    g = np.array(beats, dtype=float)
+    ons = [t for t in onsets if g[0] <= t < g[-1]]
+    for w in windows:
+        gl = g.tolist()
+        res = [[] for _ in g]
+        for t in ons:
+            i = _bisect.bisect_right(gl, t) - 1
+            if not (0 <= i < len(g) - 1):
+                continue
+            p = g[i + 1] - g[i]
+            frac = (t - g[i]) / p
+            r = (frac * 4 - round(frac * 4)) / 4 * p
+            res[i + (1 if frac > 0.5 else 0)].append(r)
+        off = np.array([statistics.median(r) if r else np.nan for r in res])
+        idx = np.arange(len(off))
+        valid = ~np.isnan(off)
+        if valid.sum() < 2:
+            break
+        off = np.interp(idx, idx[valid], off[valid])
+        off = np.convolve(off, np.ones(w) / w, mode="same")
+        if pin_start:
+            off[0] = 0.0
+        if pin_end:
+            off[-1] = 0.0
+        g = g + off
+    return g.tolist()
+
+
+def smooth_dp_beats(beats, onsets):
+    """Default post-pass for --from-midi: the DP places beats AT onsets, so
+    raw periods jitter (~16 ms median jump) and displace notes across slot
+    boundaries near barlines. Rebuild on median-filtered periods (window 5),
+    then nudge back onto the onsets."""
+    per = np.array([b - a for a, b in zip(beats, beats[1:])])
+    ps = np.array([np.median(per[max(0, i - 2):i + 3]) for i in range(len(per))])
+    g = np.concatenate([[beats[0]], beats[0] + np.cumsum(ps)])
+    return nudge_beats_to_onsets(g.tolist(), onsets)
+
+
+def extend_grid_coverage(beats, onsets):
+    """The grid must cover every onset: the DP starts at its strongest chain
+    and can leave early free material before beat 0 (quantize would cram it
+    into bar 1). Extend backward in multiples of 4 beats (downbeat phase is
+    preserved; the early material becomes pickup content) and forward as
+    needed."""
+    import math
+    b = list(beats)
+    if onsets and onsets[0] < b[0]:
+        p = b[1] - b[0]
+        n = math.ceil((b[0] - onsets[0]) / p)
+        n = ((n + 3) // 4) * 4
+        b = [b[0] - p * k for k in range(n, 0, -1)] + b
+    if onsets and onsets[-1] >= b[-1]:
+        p = b[-1] - b[-2]
+        while b[-1] <= onsets[-1]:
+            b.append(b[-1] + p)
+    return b
+
+
 def refine_fixed_grid_to_midi(mid_path, bpm_hint, midi_shift=0.0):
     """Fixed-BPM beat grid refined smoothly to the transcription's onsets.
     For near-steady performances whose strong syncopations (e.g. a 3-3-2 groove)
@@ -1760,22 +1835,7 @@ def refine_fixed_grid_to_midi(mid_path, bpm_hint, midi_shift=0.0):
     k1 = int(np.ceil((on[-1] - phase) / period)) + 2
     beats = phase + period * np.arange(k0, k1)
 
-    for w in (16, 12, 8, 6, 4):  # shrinking smoothing window: coarse-to-fine drift
-        bl = beats.tolist()
-        res = [[] for _ in beats]
-        for t in onsets:
-            i = _bisect.bisect_right(bl, t) - 1
-            if not (0 <= i < len(beats) - 1):
-                continue
-            p = beats[i + 1] - beats[i]
-            frac = (t - beats[i]) / p
-            r = (frac * 4 - round(frac * 4)) / 4 * p
-            res[i + (1 if frac > 0.5 else 0)].append(r)
-        off = np.array([statistics.median(r) if r else np.nan for r in res])
-        idx = np.arange(len(off))
-        valid = ~np.isnan(off)
-        off = np.interp(idx, idx[valid], off[valid])
-        beats = beats + np.convolve(off, np.ones(w) / w, mode="same")
+    beats = np.array(nudge_beats_to_onsets(beats.tolist(), onsets))
 
     bl = beats.tolist()
     devs = []
@@ -1864,7 +1924,16 @@ def cmd_beats(args):
         tempo = args.bpm_hint
     elif args.from_midi:
         tracked = track_beats_from_midi(args.from_midi, args.bpm_hint or 120.0)
-        beats = [round(float(b) + args.midi_shift, 4) for b in tracked]
+        beats = [float(b) + args.midi_shift for b in tracked]
+        import pretty_midi as _pm
+        _pmf = _pm.PrettyMIDI(args.from_midi)
+        _ons = sorted(n.start + args.midi_shift
+                      for i in _pmf.instruments for n in i.notes)
+        raw_fit = grid_fit_probe(args.from_midi, beats,
+                                 args.midi_shift)["onset_grid_fit"]
+        beats = smooth_dp_beats(beats, _ons)
+        beats = extend_grid_coverage(beats, _ons)
+        beats = [round(float(b), 4) for b in beats]
         tempo = (args.bpm_hint or 120.0)
     else:
         import warnings
@@ -1907,6 +1976,8 @@ def cmd_beats(args):
         # refine already shifted onsets internally; probe in the audio domain both ways
         probe = grid_fit_probe(probe_mid, beats, args.midi_shift)
         report.update(probe)
+    if args.from_midi:
+        report["raw_fit"] = raw_fit
     elif onset_grid_fit is not None:
         report["onset_grid_fit"] = round(onset_grid_fit, 3)
     if args.bpm_hint and periods:
