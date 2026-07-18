@@ -316,6 +316,19 @@ def cmd_clean(args):
     kept = [n for n in notes if id(n) not in drop]
 
     shift = kept[0].start if args.trim else 0.0
+
+    keep_window = None
+    if args.keep_window:
+        lo, hi = (float(x) for x in args.keep_window.split(":"))
+        kept = [n for n in kept if lo <= n.start - shift <= hi]
+        if not kept:
+            print(json.dumps({"error": "keep-window removed every note"}))
+            return 1
+        t0 = min(n.start for n in kept)
+        keep_window = {"lo": lo, "hi": hi,
+                       "extra_shift_s": round(t0 - shift, 3)}
+        shift = t0
+
     tempo = args.tempo or round(float(pm.estimate_tempo()), 1)
 
     out = pretty_midi.PrettyMIDI(initial_tempo=tempo)
@@ -343,7 +356,9 @@ def cmd_clean(args):
                 start=max(0.0, n.start - shift), end=max(0.0, n.end - shift)))
         for src in pm.instruments:
             for cc in src.control_changes:
-                if cc.number == 64 and cc.time - shift >= 0:
+                if cc.number == 64 and cc.time - shift >= 0 and (
+                        keep_window is None
+                        or cc.time - shift <= keep_window["hi"] - keep_window["lo"] + 3):
                     inst.control_changes.append(
                         pretty_midi.ControlChange(64, cc.value, cc.time - shift))
         out.instruments.append(inst)
@@ -360,6 +375,7 @@ def cmd_clean(args):
         "removed_ghosts": {"count": len(ghosts), "sample": [note_dict(n) for n in ghosts[:50]]},
         "removed_duplicates": {"count": len(dups), "sample": [note_dict(n) for n in dups[:50]]},
         "trim_shift_s": round(shift, 3),
+        "keep_window": keep_window,
         "tempo_bpm": tempo,
         "tempo_map": (f"{tempo_map_events} tempo events from {args.tempo_map} "
                       "(bar grid follows the performance)") if tempo_map_events else None,
@@ -2055,6 +2071,9 @@ def cmd_verify(args):
             HOP, SR = 2048, 22050
             yr, _ = librosa.load(render_wav, sr=SR, mono=True)
             ya, _ = librosa.load(args.audio, sr=SR, mono=True)
+            if args.audio_window:
+                lo, hi = (float(x) for x in args.audio_window.split(":"))
+                ya = ya[int(lo * SR):int(hi * SR)]
             cr = librosa.feature.chroma_cqt(y=yr, sr=SR, hop_length=HOP)
             ca = librosa.feature.chroma_cqt(y=ya, sr=SR, hop_length=HOP)
             D, wp = librosa.sequence.dtw(X=cr, Y=ca)
@@ -2675,6 +2694,11 @@ def main():
                                        "(DAW bar grids follow the performance through "
                                        "rubato and tempo changes)")
     c.add_argument("--report", help="also write the JSON summary to this file")
+    c.add_argument("--keep-window", metavar="LO:HI",
+                   help="keep only notes whose (trimmed) onset is within "
+                        "[LO,HI] seconds — strips video intro/outro jingles; "
+                        "output is re-zeroed to the first kept onset and the "
+                        "summary reports keep_window.extra_shift_s")
     c.set_defaults(fn=cmd_clean)
 
     b = sub.add_parser("beats", help="beat-track the recording (audio) with librosa")
@@ -2757,6 +2781,10 @@ def main():
     v.add_argument("--output", help="write the full JSON report here (verify.json)")
     v.add_argument("--worst", type=int, default=10, help="how many worst bars to list")
     v.add_argument("--mscore", default="/Applications/MuseScore 4.app/Contents/MacOS/mscore")
+    v.add_argument("--audio-window", metavar="LO:HI",
+                   help="compare against only this window of the recording "
+                        "(seconds) — for pieces whose video has intro/outro "
+                        "jingles stripped by clean --keep-window")
     v.set_defaults(fn=cmd_verify)
 
     n = sub.add_parser("consensus", help="flag notes missing from pitch-shifted "
