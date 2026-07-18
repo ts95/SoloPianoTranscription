@@ -1116,6 +1116,51 @@ def repeat_align(events, beats_per_bar, grid=16):
     return deltas_by_id, report
 
 
+def ioi_reseat(onsets, snapped, grid):
+    """Equal played inter-onset intervals must engrave as equal values
+    (Desain & Honing): per-onset snapping splits an equally-spaced dragged
+    run across a tolerance boundary (e.g. 0.88/1.15/1.42 -> 0.75/1.25/1.5).
+    Detect runs of >= 3 onsets with near-equal played IOIs (max/min <= 1.25)
+    whose snapped IOIs differ by >= 2x; re-seat on the grid value nearest
+    the median played IOI, anchored on the run's best-snapped onset. Only
+    fires when every re-seated position stays within 0.2 beat of the played
+    onset. Returns {index: new_snapped_onset}."""
+    from fractions import Fraction
+    over = {}
+    n = len(onsets)
+    i = 0
+    while i < n - 2:
+        j = i + 1
+        iois = []
+        while j < n:
+            d = float(onsets[j] - onsets[j - 1])
+            if d <= 0 or d > 2.0:
+                break
+            iois.append(d)
+            if max(iois) / min(iois) > 1.25:
+                iois.pop()
+                break
+            j += 1
+        run = list(range(i, j))
+        if len(run) >= 3:
+            sn = [float(snapped[k]) for k in run]
+            sd = [b - a for a, b in zip(sn, sn[1:])]
+            if min(sd) > 0 and max(sd) / min(sd) >= 2.0:
+                med = statistics.median(
+                    float(onsets[k + 1] - onsets[k]) for k in run[:-1])
+                step = Fraction(round(med / float(grid))) * grid
+                if step > 0:
+                    anchor = min(
+                        run, key=lambda k: abs(float(snapped[k] - onsets[k])))
+                    new = {k: snapped[anchor] + step * (k - anchor)
+                           for k in run}
+                    if all(abs(float(v - onsets[k])) <= 0.2
+                           for k, v in new.items()):
+                        over.update(new)
+        i = max(j - 1, i + 1)
+    return over
+
+
 def cmd_quantize(args):
     """MIDI -> MusicXML quantized with music21 — never MuseScore's MIDI import
     (it auto-detects its own tempo, ignores the meta events, and can lock onto
@@ -1389,6 +1434,25 @@ def cmd_quantize(args):
         k = round(f * d)
         return Fraction(b) + Fraction(k, d)
 
+    # IOI-ratio re-seat (Desain & Honing): a run of >= 3 onsets with near-
+    # equal PLAYED inter-onset intervals must engrave as equal note values —
+    # per-onset snapping can split an equally-spaced dragged run across a
+    # tolerance boundary (see ioi_reseat's docstring). Computed per staff on
+    # cluster onsets/snaps.
+    ioi_overrides, ioi_bars = {}, set()
+    for name in ("treble", "bass"):
+        cls = hand_clusters[name]
+        c_on = [cl_on(cl) for cl in cls]
+        c_snap = [snap(o) for o in c_on]
+        for idx, new_off in ioi_reseat(c_on, c_snap, grid).items():
+            if new_off != c_snap[idx]:
+                ioi_overrides[id(cls[idx][0])] = new_off
+                ioi_bars.add(int(new_off) // beats_per_bar + 1
+                             if beats_per_bar else 0)
+    if ioi_overrides:
+        summary["ioi_reseated"] = {"count": len(ioi_overrides),
+                                   "bars": sorted(ioi_bars)}
+
     # Downbeat phase (computed above, before repeat alignment); bar 1 beat 1
     # should be a downbeat.
     pad = Fraction(0)
@@ -1472,7 +1536,8 @@ def cmd_quantize(args):
     for name in ("treble", "bass"):
         slots = {}
         for cl in hand_clusters[name]:
-            slots.setdefault(snap(cl_on(cl)), []).extend(cl)
+            off = ioi_overrides.get(id(cl[0]), snap(cl_on(cl)))
+            slots.setdefault(off, []).extend(cl)
         onsets = sorted(slots)
         marks = []
         if args.key:
