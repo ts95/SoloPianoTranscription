@@ -357,6 +357,28 @@ bar-6 pattern):
 This complements repeat alignment (which needs family evidence): IOI
 consistency is *self-evidence* — it fires on figures that appear only once.
 
+## Addendum 7 (2026-07-18): surgical edits rebuild from source — never round-trip the .mscz
+
+Editing the delivered score by round-tripping (mscz → exported musicxml →
+edit → re-import) broke the file: MuseScore's MusicXML export embeds its
+layout, and re-importing froze 50 stale system/page breaks as LayoutBreaks
+(pages with a single bar), re-pinned beams, and surfaced instrument labels.
+Patching the patched file compounded it (16-page layout). Standing rules:
+
+- **The `.mscz` is a build product.** A piece's sources are `cleaned.mid` +
+  `beats.json` + the deterministic chain + its surgical edits. Any
+  correction re-runs the chain; nothing edits a roundtripped file.
+- **Surgical edits live at the pre-MuseScore stage**: a per-piece edit script
+  (`output/<slug>/edits.py`, music21 against the fresh
+  quantize→post→clean_musicxml output) applied between `clean_musicxml` and
+  the `.mscz` conversion. The cleanup-score chain runs it automatically when
+  present, so re-deliveries are reproducible with one command and ear-fix
+  history is versioned in the piece directory (documented in CLEANUP_NOTES).
+- **Never feed an mscore-exported MusicXML back to mscore.** (Sibling of the
+  "never import a .mid" rule; add to CLAUDE.md gotchas at implementation.)
+- `finish_score.py` defensively strips `LayoutBreak` elements and solo-piano
+  instrument long/short names in its hygiene pass, alongside BeamMode.
+
 ## Out of scope (YAGNI)
 
 - Workflow-tool multi-agent orchestration (bake-off parallelism is already
