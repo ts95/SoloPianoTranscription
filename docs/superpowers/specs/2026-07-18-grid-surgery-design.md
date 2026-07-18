@@ -436,9 +436,12 @@ copied). Standing doctrine for every ear report from now on:
    judgment. The tie-stub fix needed both a producer fix AND the final
    invariant (8 stubs came from a second producer).
 3. **Verify the region, not the patch**: after any fix, re-audit the edited
-   bar ± 1 and the figure's whole family against the full sanity checklist
-   (stubs, ghosts, IOI consistency, family-skeleton agreement, balance),
-   and re-run the whole-piece class sweep to zero.
+   bar ± 1 **in BOTH staves** and the figure's whole family against the full
+   sanity checklist (stubs, ghosts, IOI consistency, family-skeleton
+   agreement, balance), and re-run the whole-piece class sweep to zero. A
+   performance defect (drag, rush) is almost always two-handed — Mirrors
+   bar 7's treble was shifted onto the family skeleton while the bass,
+   dragged identically, was left behind for another ear pass.
 4. `clean_musicxml --source generated` now enforces the no-one-slot-tie-stub
    invariant (implemented; plan adds its unit test). `score_query` gains a
    `sweep` subcommand bundling the class detectors so step 1/3 is one
