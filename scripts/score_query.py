@@ -109,6 +109,141 @@ def cmd_bar(args):
     return 0
 
 
+def _bar_signatures(sc):
+    """(pitch multiset, rhythm tuple) per (part, measure)."""
+    sigs = {}
+    for pi, part in enumerate(sc.parts):
+        for m in part.getElementsByClass("Measure"):
+            pcs, rhythm = [], []
+            for el in m.recurse().notesAndRests:
+                if el.pitches and (el.tie is None or el.tie.type == "start"):
+                    pcs += [p.midi for p in el.pitches]
+                    rhythm.append(round(float(el.offset) * 4) / 4)
+            key = m.number
+            a, b = sigs.get(key, ([], []))
+            sigs[key] = (a + pcs, sorted(set(b) | set(rhythm)))
+    return sigs
+
+
+def _jaccard(a, b):
+    from collections import Counter
+    ca, cb = Counter(a), Counter(b)
+    inter = sum((ca & cb).values())
+    union = sum((ca | cb).values())
+    return inter / union if union else 0.0
+
+
+def cmd_family(args):
+    from music21 import converter
+    d, man, slug, beats = load_piece(args.piece_dir)
+    sc = converter.parse(os.path.join(d, slug + ".musicxml"))
+    sigs = _bar_signatures(sc)
+    qm = bar_to_beats(man, int(args.bar))[1]
+    if qm not in sigs:
+        print(f"no measure {qm}")
+        return 1
+    pcs0, rh0 = sigs[qm]
+    rows = []
+    for m, (pcs, rh) in sorted(sigs.items()):
+        if m == qm:
+            continue
+        pj = _jaccard(pcs0, pcs)
+        rj = _jaccard(rh0, rh)
+        if pj >= 0.8:
+            rows.append((m, "pitch+rhythm" if rj >= 0.8 else "pitch", pj, rj))
+        elif rj >= 0.85 and len(rh0) >= 4:
+            rows.append((m, "rhythm", pj, rj))
+    off = 1 if man.get("anacrusis") else 0
+    print(f"family of printed bar {args.bar} (quantize m{qm}):")
+    for m, kind, pj, rj in rows:
+        print(f"  printed bar {m - off:3d}  [{kind:12s}] "
+              f"pitch-jaccard {pj:.2f}  rhythm-jaccard {rj:.2f}")
+        print(f"    rhythm: {' '.join(str(x) for x in sigs[m][1])}")
+    print(f"  this bar rhythm: {' '.join(str(x) for x in rh0)}")
+    return 0
+
+
+def cmd_sweep(args):
+    import pretty_midi
+    from music21 import converter
+    from collections import Counter
+    d, man, slug, beats = load_piece(args.piece_dir)
+    sc = converter.parse(os.path.join(d, slug + ".musicxml"))
+    stubs = unbal = 0
+    arps = []
+    for pi, part in enumerate(sc.parts):
+        for m in part.getElementsByClass("Measure"):
+            if m.number > 1 and abs(
+                    float(m.duration.quarterLength)
+                    - float(m.barDuration.quarterLength)) > 0.001:
+                unbal += 1          # measure 1 may be a legitimate anacrusis
+            for el in m.recurse().notesAndRests:
+                t = getattr(el, "tie", None)
+                if (t and t.type == "stop"
+                        and el.duration.quarterLength <= 0.25
+                        and float(el.offset) > 0):
+                    stubs += 1
+                if any(type(e).__name__ == "ArpeggioMark"
+                       for e in getattr(el, "expressions", [])):
+                    arps.append(m.number)
+    # rhythm-skeleton near-misses
+    sigs = _bar_signatures(sc)
+    skeletons = Counter(tuple(rh) for _, rh in sigs.values() if len(rh) >= 4)
+    near = []
+    for m, (_, rh) in sorted(sigs.items()):
+        t = tuple(rh)
+        if skeletons.get(t, 0) >= 3:
+            continue
+        for sk, cnt in skeletons.items():
+            if cnt >= 3:
+                diff = set(sk) ^ set(t)
+                if 0 < len(diff) <= 2:
+                    near.append((m, list(sk)))
+                    break
+    # chord-brush ghosts still in the cleaned MIDI
+    pm = pretty_midi.PrettyMIDI(os.path.join(d, slug + ".cleaned.mid"))
+    ghosts = sum(1 for i in pm.instruments for n in i.notes
+                 if (n.end - n.start) < 0.055 and n.velocity < 55)
+    print(f"one-slot tie stubs: {stubs}")
+    print(f"arpeggio marks: {len(arps)} (bars {sorted(set(arps))[:12]})")
+    print(f"possible brush ghosts in cleaned MIDI: {ghosts}")
+    print(f"rhythm-skeleton near-misses (<=2 moves vs >=3x skeleton): "
+          f"{[m for m, _ in near]}")
+    print(f"unbalanced measures: {unbal}")
+    return 0
+
+
+def cmd_layout(args):
+    import re
+    import zipfile
+    d, man, slug, beats = load_piece(args.piece_dir)
+    with zipfile.ZipFile(os.path.join(d, slug + ".mscz")) as z:
+        mscx = next(n for n in z.namelist() if n.endswith(".mscx"))
+        x = z.read(mscx).decode("utf-8", "replace")
+    lb = x.count("<LayoutBreak>")
+    labels = len(re.findall(r"<(?:long|short)Name>", x))
+    pdf = os.path.join(d, slug + ".pdf")
+    pages = []
+    try:
+        from pypdf import PdfReader
+        for pg in PdfReader(pdf).pages:
+            nums = [int(n) for n in re.findall(r"\b(\d{1,3})\b",
+                                               pg.extract_text() or "")]
+            bars = [n for n in nums if 1 <= n <= 400]
+            pages.append(min(bars) if bars else None)
+    except Exception as e:  # pypdf absent or PDF unreadable
+        pages = [f"(pdf scan unavailable: {e})"]
+    print(f"LayoutBreaks in mscz: {lb} (expect 0)")
+    print(f"instrument labels in mscz: {labels} (expect 0)")
+    print(f"first bar number per page: {pages}")
+    if len([p for p in pages if isinstance(p, int)]) >= 2:
+        firsts = [p for p in pages if isinstance(p, int)]
+        gaps = [b - a for a, b in zip(firsts, firsts[1:])]
+        if gaps and (min(gaps) <= max(gaps) // 4):
+            print(f"WARNING: uneven bars-per-page distribution {gaps}")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(required=True)
@@ -117,6 +252,14 @@ def main():
         p.add_argument("piece_dir")
         p.add_argument("bar")
         p.set_defaults(fn=fn)
+    for name, fn in (("sweep", cmd_sweep), ("layout", cmd_layout)):
+        p = sub.add_parser(name)
+        p.add_argument("piece_dir")
+        p.set_defaults(fn=fn)
+    p = sub.add_parser("family")
+    p.add_argument("piece_dir")
+    p.add_argument("bar")
+    p.set_defaults(fn=cmd_family)
     args = ap.parse_args()
     sys.exit(args.fn(args))
 

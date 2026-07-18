@@ -59,5 +59,29 @@ def test_map_and_bar():
     print("ok: map + two-staff aligned bar diff")
 
 
+def test_family_finds_transposed_rhythm_sibling():
+    with tempfile.TemporaryDirectory() as d:
+        pdir = make_piece(d)   # 16 identical-rhythm bars (transposed content)
+        r = subprocess.run([PY, os.path.join(HERE, "score_query.py"),
+                            "family", pdir, "3"],
+                           capture_output=True, text=True, check=True)
+        assert "rhythm" in r.stdout.lower(), r.stdout
+        assert "bar 5" in r.stdout or "5" in r.stdout.split(), r.stdout
+    print("ok: family reports rhythm siblings")
+
+
+def test_sweep_runs_clean_on_fixture():
+    with tempfile.TemporaryDirectory() as d:
+        pdir = make_piece(d)
+        r = subprocess.run([PY, os.path.join(HERE, "score_query.py"),
+                            "sweep", pdir],
+                           capture_output=True, text=True, check=True)
+        assert "tie stubs: 0" in r.stdout, r.stdout
+        assert "unbalanced" in r.stdout
+    print("ok: sweep runs all detectors")
+
+
 if __name__ == "__main__":
     test_map_and_bar()
+    test_family_finds_transposed_rhythm_sibling()
+    test_sweep_runs_clean_on_fixture()
