@@ -162,6 +162,30 @@ pointer to this skill.
   the grid-surgery skill
 - Modify: `CLAUDE.md`, `README.md` — document the new script + skill
 
+## Addendum (2026-07-18, from the Mirrors rerun)
+
+A final validation transcription (Mirrors, full video, fresh run) exercised
+the standardized flow end-to-end. The grid path needed **zero hand code** —
+bake-off, probe, quantize all ran clean (from-midi 0.980, no flags,
+overturning the first delivery's refine grid at 0.925). Exactly two
+hand-written snippets remained, both deterministic; add them to the toolkit
+scope:
+
+1. **`clean --keep-window <lo_s>:<hi_s>`** — strip notes and CC64 outside the
+   window (in cleaned-MIDI time), re-zero to the first kept onset, and report
+   the resulting audio-domain shift (`trim_shift_s` + window start) for
+   `--midi-shift`/`--beats-shift`. Used for video intro/outro jingles.
+   Deciding the boundaries (which onset gaps are jingle seams) stays with the
+   model — `diagnose`-style support comes free from the onset-gap table.
+2. **`verify --audio-window <lo_s>:<hi_s>`** — trim the recording internally
+   before chroma-DTW, so a windowed piece doesn't need a hand-made ffmpeg
+   copy.
+
+Skill-rubric addition: **repeat_alignment count is grid evidence** — the
+Mirrors rerun's better grid took the applied count from 1 to 0 while bars
+2 and 4 still engraved identically; a candidate grid that reduces applied
+repeat-fixes (without introducing rhythm divergence in verify) is preferred.
+
 ## Out of scope (YAGNI)
 
 - Workflow-tool multi-agent orchestration (bake-off parallelism is already
