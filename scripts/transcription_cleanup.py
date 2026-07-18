@@ -1266,13 +1266,29 @@ def cmd_quantize(args):
                 clusters.append([n])
         hand_clusters[name] = clusters
 
+    # Downbeat phase must be known BEFORE repeat alignment: with a pickup the
+    # true bars sit at [phase + k*beats_per_bar), and windows cut at plain
+    # multiples of beats_per_bar straddle the barlines — an applied alignment
+    # then silently shifts the next bar's head (heard as boundary-rhythm
+    # errors; Mirrors 2026-07-18, printed bars 6-7).
+    phase, phase_conf, phase_cues = 0, 0.0, {}
+    if beats_per_bar >= 2:
+        raw_events = [(float(to_ql(n.start)), n.pitch, n.velocity,
+                       float(to_ql(n.end) - to_ql(n.start))) for n in notes]
+        phase, phase_conf, phase_cues = infer_bar_phase(raw_events, beats_per_bar)
+        if args.bar_phase is not None:
+            phase, phase_conf = args.bar_phase % beats_per_bar, 1.0
+    align_phase = phase if (phase != 0 and phase_conf >= 0.5) else 0
+
     # Repeat-consistency alignment (spec 2026-07-17): a uniformly rushed
     # instance of a repeated bar is de-shifted BEFORE division selection and
-    # snapping, using the group's cleanest instance as reference.
+    # snapping, using the group's cleanest instance as reference. Onsets are
+    # rebased by align_phase so windows coincide with the engraved bars.
     rep_deltas, rep_report = {}, []
     if not args.no_repeat_align:
         rep_deltas, rep_report = repeat_align(
-            [(id(n), float(to_ql(n.start)), n.pitch) for n in notes],
+            [(id(n), float(to_ql(n.start)) - align_phase, n.pitch)
+             for n in notes],
             beats_per_bar, args.grid)
     if rep_report:
         summary["repeat_alignment"] = rep_report
@@ -1348,29 +1364,27 @@ def cmd_quantize(args):
         k = round(f * d)
         return Fraction(b) + Fraction(k, d)
 
-    # Downbeat phase from meter-induction cues; bar 1 beat 1 should be a downbeat.
+    # Downbeat phase (computed above, before repeat alignment); bar 1 beat 1
+    # should be a downbeat.
     pad = Fraction(0)
     if beats_per_bar >= 2:
-        events = [(float(n_on(n)), n.pitch, n.velocity,
-                   float(n_end(n) - n_on(n))) for n in notes]
-        phase, conf, cues = infer_bar_phase(events, beats_per_bar)
-        summary["bar_phase"] = {"downbeat_at_beat": phase, "confidence": conf,
-                                "cues": cues}
+        summary["bar_phase"] = {"downbeat_at_beat": phase,
+                                "confidence": phase_conf, "cues": phase_cues}
         if args.bar_phase is not None:
-            phase, conf = args.bar_phase % beats_per_bar, 1.0
             summary["bar_phase"]["override"] = phase
         # A wrong pickup is glaring (a near-empty leading bar), and pieces in this
         # repertoire almost always start on the downbeat — so only insert a pickup
         # on strong evidence. Marginal confidence keeps the first onset on beat 1.
-        if phase != 0 and conf >= 0.5:
+        if phase != 0 and phase_conf >= 0.5:
             pad = Fraction(beats_per_bar - phase)
             summary["bar_phase"]["pickup"] = (
                 f"first {phase} beat(s) are a pickup — bar 1 opens with "
                 f"{beats_per_bar - phase} beat(s) of rest; verify by ear")
         elif phase != 0:
             summary["bar_phase"]["pickup"] = (
-                f"downbeat evidence too weak (confidence {conf} < 0.5) — kept first "
-                "onset on beat 1; pass --bar-phase to force a pickup if needed")
+                f"downbeat evidence too weak (confidence {phase_conf} < 0.5) — "
+                "kept first onset on beat 1; pass --bar-phase to force a pickup "
+                "if needed")
 
     # Tempo structure: sustained plateaus become real metronome-mark changes
     # (a piece may have several tempi); short swings within a plateau become
@@ -1558,10 +1572,14 @@ def cmd_quantize(args):
             el.duration = m21dur.Duration(pieces[0])
             # A "chord" whose source onsets are spread in time is a rolled
             # chord — engrave the roll (arpeggiate squiggle), don't silently
-            # flatten it into a block chord.
+            # flatten it into a block chord. Threshold 90 ms: spreads of
+            # 40-80 ms are ordinary human asynchrony (slot-merge routinely
+            # groups them), not a performed roll — marking them sprayed
+            # squiggles over the score (Mirrors 2026-07-18: 62 marks, nearly
+            # all inaudible as rolls).
             if len(pitches) > 1:
                 spread = max(n.start for n in group) - min(n.start for n in group)
-                if spread > 0.04:
+                if spread > 0.09:
                     el.expressions.append(m21expr.ArpeggioMark())
                     arpeggiated += 1
             items.append((off + pad, el))

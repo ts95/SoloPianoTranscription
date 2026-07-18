@@ -604,6 +604,11 @@ def extract_measure_data(mscx_path, staff_ids=('1', '2')):
                         current_sig_d = int(sd.text)
 
         ticks = get_time_sig_ticks(current_sig_n, current_sig_d)
+        if meas.get('len'):
+            # irregular measure (e.g. an anacrusis): len is a fraction of a
+            # whole note and overrides the time signature's nominal length
+            ln, ld = (int(x) for x in meas.get('len').split('/'))
+            ticks = int(1920 * ln / ld)
         measure_info.append({
             'number': i + 1,
             'time_sig': f'{current_sig_n}/{current_sig_d}',
