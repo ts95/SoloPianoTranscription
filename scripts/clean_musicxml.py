@@ -591,6 +591,88 @@ def clean_breath_marks(measures, log):
 
 # ── Main entry point ────────────────────────────────────────────────────
 
+def clean_one_slot_tie_stubs(measures, log):
+    """Collapse "note tied to a one-slot (16th) appendix" into note + rest.
+
+    A tied one-16th continuation reads worse than a 16th rest (the pedal
+    carries the ring) and visually doubles chords. quantize no longer emits
+    these, but other producers (post's tie handling) still can — this is the
+    final, source-independent invariant: no within-bar one-slot tie stubs
+    (Mirrors 2026-07-18; the pattern had sprayed 44 measures).
+    """
+    fixed = 0
+    divisions = None
+    for measure in measures:
+        attr = measure.find('attributes/divisions')
+        if attr is not None and attr.text:
+            divisions = int(attr.text)
+        if not divisions:
+            continue
+        slot = divisions // 4
+        notes = list(measure.findall('note'))
+
+        def pitch_key(n):
+            p = n.find('pitch')
+            if p is None:
+                return None
+            return (p.findtext('step'), p.findtext('alter') or '0',
+                    p.findtext('octave'))
+
+        # group chord clusters (note + following <chord/> members)
+        clusters, cur = [], []
+        for n in notes:
+            if n.find('chord') is None and cur:
+                clusters.append(cur); cur = []
+            cur.append(n)
+        if cur:
+            clusters.append(cur)
+
+        for ci, cl in enumerate(clusters):
+            if ci == 0:
+                continue
+            durs = [int(n.findtext('duration') or 0) for n in cl]
+            ties = [n.find("tie[@type='stop']") is not None for n in cl]
+            starts = [n.find("tie[@type='start']") is not None for n in cl]
+            if not (all(ties) and not any(starts) and all(d == slot for d in durs)
+                    and all(n.find('rest') is None for n in cl)):
+                continue
+            stub_pcs = {pitch_key(n) for n in cl}
+            # find the tie-start partner cluster earlier in this measure
+            partner = None
+            for pj in range(ci - 1, -1, -1):
+                pcs = {pitch_key(n) for n in clusters[pj]}
+                if pcs == stub_pcs and any(
+                        n.find("tie[@type='start']") is not None
+                        for n in clusters[pj]):
+                    partner = clusters[pj]
+                    break
+            if partner is None:
+                continue
+            # strip the tie-start from the partner
+            for n in partner:
+                for t in n.findall("tie[@type='start']"):
+                    n.remove(t)
+                nots = n.find('notations')
+                if nots is not None:
+                    for td in nots.findall("tied[@type='start']"):
+                        nots.remove(td)
+                    if len(nots) == 0:
+                        n.remove(nots)
+            # turn the stub's head note into a rest, drop chord members
+            head = cl[0]
+            for tag in ('pitch', 'stem', 'beam', 'accidental', 'notations',
+                        'tie', 'chord'):
+                for el in head.findall(tag):
+                    head.remove(el)
+            head.insert(0, ET.Element('rest'))
+            for extra in cl[1:]:
+                measure.remove(extra)
+            fixed += 1
+            log.append(f"Collapsed one-slot tie stub into rest "
+                       f"(m.{measure.get('number')})")
+    return fixed
+
+
 def clean_musicxml(input_path, instrument='piano', dynamics=None, sections=None,
                    verbose=False, source='generated'):
     """Clean a MusicXML file of artifacts.
@@ -651,6 +733,7 @@ def clean_musicxml(input_path, instrument='piano', dynamics=None, sections=None,
 
         # Source-agnostic safety: pedal pairing matters once we insert pedals.
         _report('Unpaired pedals', clean_unpaired_pedals(part_measures, log))
+        _report('One-slot tie stubs', clean_one_slot_tie_stubs(part_measures, log))
 
         if is_piano:
             _report('Non-piano articulations',

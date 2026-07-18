@@ -249,9 +249,11 @@ def test_double_dotted_fill_no_rest_confetti():
     print("ok: 1.75-beat pedal fill engraves double-dotted, not note+rest")
 
 
-def test_tie_fill_absorbs_unexpressible_gaps():
-    """A 1.25-beat gap under pedal has no single note value: it must engrave
-    as quarter tied to 16th, not quarter + 16th rest."""
+def test_tie_fill_no_one_slot_stub():
+    """Policy 2026-07-18 (Mirrors): a 1.25-beat fill must NOT engrave as a
+    quarter tied to a one-slot 16th appendix — "quarter + 16th rest" reads
+    cleaner and the pedal carries the ring. No tied continuation of one slot
+    (0.25 QL) may appear anywhere; larger tie pieces are still allowed."""
     with tempfile.TemporaryDirectory() as d:
         mid = os.path.join(d, "t.mid")
         out = os.path.join(d, "t.musicxml")
@@ -269,24 +271,23 @@ def test_tie_fill_absorbs_unexpressible_gaps():
         inst.control_changes.append(pretty_midi.ControlChange(64, 0, 8.5))
         pm.instruments.append(inst)
         pm.write(mid)
-        r = subprocess.run([PY, SCRIPT, "quantize", mid, out, "--bpm", "120",
-                            "--time-sig", "4/4", "--split", "C4",
-                            "--bar-phase", "0"],
-                           capture_output=True, text=True, check=True)
-        summary = json.loads(r.stdout)
-        assert summary["staves"]["bass"]["rest_absorbing_tie_fills"] > 0, (
-            "summary reports no tie fills")
+        subprocess.run([PY, SCRIPT, "quantize", mid, out, "--bpm", "120",
+                        "--time-sig", "4/4", "--split", "C4",
+                        "--bar-phase", "0"],
+                       capture_output=True, text=True, check=True)
         from music21 import converter
         bass = converter.parse(out).parts[-1]
-        notes = list(bass.recurse().notes)
-        assert any(n.tie is not None for n in notes), "no ties engraved"
-        rests = [r for r in bass.recurse().getElementsByClass("Rest")
-                 if r.duration.quarterLength < 1.0]
-        last = max(n.getOffsetInHierarchy(bass) for n in notes)
-        interior = [r for r in rests if r.getOffsetInHierarchy(bass) < last]
-        assert not interior, (
-            f"{len(interior)} sub-beat rest(s) remain despite tie fill")
-    print("ok: unexpressible pedal gaps engrave as tied notes, no rests")
+        stubs = [n for n in bass.recurse().notes
+                 if n.tie is not None and n.tie.type in ("stop", "continue")
+                 and n.duration.quarterLength <= 0.25]
+        assert not stubs, (
+            f"{len(stubs)} one-slot tie stub(s) engraved — the 1.25 fill must "
+            "end at the quarter, leaving a 16th rest")
+        # the base value must still be the full quarter, not clipped shorter
+        q = [n for n in bass.recurse().notes
+             if n.pitch.midi == 40 and n.duration.quarterLength == 1.0]
+        assert q, "expected the 1.25-gap bass note to keep its quarter base"
+    print("ok: one-slot tie stubs are rests now; base values intact")
 
 
 def test_always_mode_fills_without_cc64():
@@ -328,5 +329,5 @@ if __name__ == "__main__":
     test_pedal_marks_from_mid()
     test_pedal_fills_short_gaps_no_rest()
     test_double_dotted_fill_no_rest_confetti()
-    test_tie_fill_absorbs_unexpressible_gaps()
+    test_tie_fill_no_one_slot_stub()
     test_always_mode_fills_without_cc64()

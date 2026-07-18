@@ -416,6 +416,34 @@ Patching the patched file compounded it (16-page layout). Standing rules:
 - `finish_score.py` defensively strips `LayoutBreak` elements and solo-piano
   instrument long/short names in its hygiene pass, alongside BeamMode.
 
+## Addendum 8 (2026-07-18): one-shot doctrine — fix the class, sweep the piece, verify the region
+
+Five sequential ear reports on Mirrors bars 6–7 each exposed the next latent
+defect one span further out, because each fix was an element patch verified
+only locally. The tie-stub report broke the pattern: the "one" defect existed
+in **44 measures** (including the sibling bars the previous fix had faithfully
+copied). Standing doctrine for every ear report from now on:
+
+1. **Characterize the defect as a class, not an instance.** Before fixing,
+   express the defect mechanically (e.g. "tied continuation ≤ 1 slot",
+   "chord member < 55 ms", "line displaced vs family skeleton") and sweep
+   the WHOLE piece for it. The report names one bar; the class names the
+   real scope.
+2. **Fix at the deepest sensible level**: policy in the producer (quantize)
+   when the class is a generation rule; a source-independent invariant at
+   the end of the chain (clean_musicxml) when multiple producers can emit
+   it; an `edits.py` instance patch only for genuine one-off performance
+   judgment. The tie-stub fix needed both a producer fix AND the final
+   invariant (8 stubs came from a second producer).
+3. **Verify the region, not the patch**: after any fix, re-audit the edited
+   bar ± 1 and the figure's whole family against the full sanity checklist
+   (stubs, ghosts, IOI consistency, family-skeleton agreement, balance),
+   and re-run the whole-piece class sweep to zero.
+4. `clean_musicxml --source generated` now enforces the no-one-slot-tie-stub
+   invariant (implemented; plan adds its unit test). `score_query` gains a
+   `sweep` subcommand bundling the class detectors so step 1/3 is one
+   command.
+
 ## Out of scope (YAGNI)
 
 - Workflow-tool multi-agent orchestration (bake-off parallelism is already

@@ -1558,6 +1558,16 @@ def cmd_quantize(args):
             # (the staff-final event's cap IS its raw duration — not a fill)
             exact_fill = (not ternary and not last
                           and (dur == cap or dur == beat_cap))
+            # A fill that pokes ≤ one slot past a barline creates a tied stub
+            # opening the next bar and visually doubling its first chord —
+            # end flush at the barline instead; the pedal carries the ring
+            # (Mirrors 2026-07-18, bars 6→7).
+            if exact_fill and beats_per_bar:
+                bar_end = Fraction((int(off + pad) // beats_per_bar + 1)
+                                   * beats_per_bar) - pad
+                over = off + dur - bar_end
+                if 0 < over <= grid:
+                    dur = bar_end - off
             pieces, rem = [], max(dur, grid)
             while rem >= grid:
                 c = dur_down(rem, ternary)
@@ -1567,6 +1577,12 @@ def cmd_quantize(args):
                 pieces = [grid]
             if not exact_fill:
                 pieces = pieces[:1]
+            # Rest-absorbing tie-fills must not end in a one-slot appendix:
+            # "quarter tied to a 16th" reads worse than "quarter + 16th rest"
+            # and the pattern sprayed 44 measures of Mirrors. Keep multi-piece
+            # ties only when every trailing piece is bigger than one slot.
+            while len(pieces) > 1 and pieces[-1] <= grid:
+                pieces = pieces[:-1]
             el = (m21note.Note(pitches[0]) if len(pitches) == 1
                   else m21chord.Chord(pitches))
             el.duration = m21dur.Duration(pieces[0])
