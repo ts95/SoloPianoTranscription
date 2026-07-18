@@ -357,6 +357,21 @@ bar-6 pattern):
 This complements repeat alignment (which needs family evidence): IOI
 consistency is *self-evidence* — it fires on figures that appear only once.
 
+Two sibling mechanical repairs from the same ear passes (both in `quantize`,
+both reported in the summary, both regression-tested):
+
+- **Chord-brush ghosts**: a slot-merged chord member with raw duration
+  < ~0.055 s AND velocity well below the chord's strongest note (ratio
+  < ~0.75) is a key/pedal brush, not a voicing — drop it from the chord
+  (Mirrors bar 6: a 40 ms vel-51 C3 inside a treble 16th; bar 7: a 44 ms
+  E♭4 inside the melody chord). `clean` keeps these (in-key, consonant) —
+  the chord context is what condemns them, so the fix lives at chord-merge.
+- **No cross-barline tie-stubs under pedal**: when legato fill would tie a
+  note across a barline into a stub shorter than one beat and the pedal is
+  down, end the note flush at the barline instead — the pedal carries the
+  ring, and the stub doubles the next chord's pitches visually (Mirrors 6→7:
+  G3,E♭4 engraved three times in a row across the boundary).
+
 ## Addendum 7 (2026-07-18): surgical edits rebuild from source — never round-trip the .mscz
 
 Editing the delivered score by round-tripping (mscz → exported musicxml →
