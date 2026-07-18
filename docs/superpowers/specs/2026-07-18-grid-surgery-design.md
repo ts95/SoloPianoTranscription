@@ -313,6 +313,18 @@ stage:
   and its "ghost" E♭4 turned out to be the family voicing brushed lightly
   (kept, overturning the brush-drop heuristic). Only when a figure has no
   clean sibling does local evidence (IOI ratios, slots) decide.
+- **Families are rhythmic, not just pitch-identical (rule).** Rhythmic
+  figures recur transposed — higher, lower, in another key — with the same
+  rhythmic skeleton. `score_query family` therefore matches on BOTH axes and
+  reports which kind of sibling it found: pitch-family (repeat_align's
+  multiset Jaccard) and **rhythm-family** (in-bar onset-pattern similarity,
+  transposition-invariant). The rhythm-skeleton prior also works as an
+  outlier detector: a bar whose engraved rhythm is a near-miss (≤2 slot
+  moves) of a skeleton occurring ≥3× elsewhere is a correction candidate —
+  auto-adjust only when the played onsets are within snap tolerance of the
+  skeleton reading too (i.e. the evidence is ambiguous and the prior
+  decides); otherwise flag with the skeleton named. Pitch-blind matching is
+  looser, so the frequency (≥3) and near-miss (≤2 moves) gates are hard.
 
 **Token-efficient purpose-built tools** (the session's hand-written inline
 analyses, hardened into one CLI — `scripts/score_query.py`):
