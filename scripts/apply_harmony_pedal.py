@@ -13,12 +13,87 @@ Usage: apply_harmony_pedal.py <file.mscz> [--staff 2] [--keep-backup]
 import argparse
 import os
 import sys
+import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from musescore_pedal_lib import (
     extract_mscz, extract_measure_data, add_pedals, make_syncopated_pedal_config,
+    repackage_mscz, _find_score_staves,
 )
 from analyze_pedaling import analyze_measure
+
+_REST_QL = {"whole": 4.0, "half": 2.0, "quarter": 1.0, "eighth": 0.5,
+            "16th": 0.25, "32nd": 0.125, "64th": 0.0625}
+
+
+def make_anacrusis(root, pad_beats):
+    """Convert measure 1 from a padded full bar into a true pickup measure.
+
+    quantize models a pickup by opening bar 1 with `pad_beats` beats of rest;
+    engraved properly that bar is an anacrusis: a short implicit measure
+    holding only the pickup. Strip the leading rests from every staff's first
+    measure, shrink the measure (len attribute) and exclude it from the
+    measure count. Runs BEFORE pedals are added — pedal spanners carry
+    relative <location> anchors that rest removal would corrupt.
+    """
+    from fractions import Fraction
+    pad = Fraction(pad_beats).limit_denominator(16)
+    staves = _find_score_staves(root)
+    plans = []
+    for staff in staves:
+        m1 = staff.find("Measure")
+        if m1 is None:
+            raise SystemExit("anacrusis: staff without measures")
+        removed = Fraction(0)
+        doomed = []
+        for voice in m1.findall("voice"):
+            for el in list(voice):
+                if removed >= pad:
+                    break
+                if el.tag in ("Clef", "KeySig", "TimeSig", "Tempo", "eid",
+                              "location", "BarLine"):
+                    continue
+                if el.tag != "Rest":
+                    raise SystemExit(
+                        f"anacrusis: found <{el.tag}> before {pad} beats of "
+                        "leading rest — measure 1 does not match the pickup pad")
+                dt = el.findtext("durationType")
+                if dt == "measure":
+                    raise SystemExit("anacrusis: full-measure rest in bar 1 — "
+                                     "nothing to convert")
+                ql = Fraction(_REST_QL[dt]).limit_denominator(64)
+                dots = int(el.findtext("dots") or 0)
+                ql = ql * (2 - Fraction(1, 2 ** dots))
+                doomed.append((voice, el))
+                removed += ql
+            break  # leading rests live in voice 1; other voices start later
+        if removed != pad:
+            raise SystemExit(f"anacrusis: leading rests sum to {removed}, "
+                             f"expected {pad}")
+        plans.append((m1, doomed))
+    # all staves matched — apply
+    ts = root.find(".//TimeSig")
+    bar_beats = Fraction(int(ts.findtext("sigN")) * 4, int(ts.findtext("sigD")))
+    rem = bar_beats - pad
+    ln = Fraction(rem, 4)
+    for m1, doomed in plans:
+        for voice, el in doomed:
+            voice.remove(el)
+        m1.set("len", f"{ln.numerator}/{ln.denominator}")
+        irr = ET.SubElement(m1, "irregular")
+        irr.text = "1"
+    print(f"anacrusis: measure 1 shrunk to {rem} beat(s) "
+          f"(len {ln.numerator}/{ln.denominator}), leading rests removed, "
+          "excluded from measure count")
+
+
+def apply_anacrusis(mscz_path, pad_beats,
+                    extract_dir="/tmp/mscz_anacrusis"):
+    mscx = extract_mscz(mscz_path, extract_dir)
+    tree = ET.parse(mscx)
+    make_anacrusis(tree.getroot(), pad_beats)
+    tree.write(mscx, encoding="UTF-8", xml_declaration=True)
+    repackage_mscz(mscz_path, extract_dir)
 
 
 def write_midi_pedal(midi_path, get_pedals_fn, measure_numbers, ticks_map,
@@ -86,6 +161,10 @@ def main():
                                    ".mid as CC64 (replaces existing sustain)")
     ap.add_argument("--beats", help="beats.json mapping beats to seconds "
                                     "(required with --midi)")
+    ap.add_argument("--anacrusis", type=float, metavar="PAD_BEATS",
+                    help="convert measure 1 from a padded bar (quantize's "
+                         "pickup: PAD_BEATS beats of leading rest) into a true "
+                         "anacrusis measure; runs before pedaling")
     args = ap.parse_args()
     if args.midi and not args.beats:
         ap.error("--midi requires --beats")
@@ -93,6 +172,9 @@ def main():
     if not os.path.exists(args.mscz):
         print(f"ERROR: not found: {args.mscz}", file=sys.stderr)
         sys.exit(1)
+
+    if args.anacrusis:
+        apply_anacrusis(args.mscz, args.anacrusis)
 
     mscx = extract_mscz(args.mscz, "/tmp/harmony_pedal_analyze")
     measures = extract_measure_data(mscx, staff_ids=("1", "2"))

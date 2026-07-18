@@ -8,7 +8,7 @@ import tempfile
 
 import pretty_midi
 
-from apply_harmony_pedal import strip_beam_modes, write_midi_pedal
+from apply_harmony_pedal import make_anacrusis, strip_beam_modes, write_midi_pedal
 from musescore_pedal_lib import make_syncopated_pedal_config
 
 
@@ -59,6 +59,38 @@ def test_strip_beam_modes():
     print("ok: strip_beam_modes removes every forced BeamMode, keeps chords")
 
 
+def test_make_anacrusis():
+    import xml.etree.ElementTree as ET
+    xml = """<museScore><Score>
+      <Staff id="1"><Measure><voice>
+        <Clef><concertClefType>G</concertClefType></Clef>
+        <TimeSig><sigN>4</sigN><sigD>4</sigD></TimeSig>
+        <Rest><durationType>half</durationType></Rest>
+        <Rest><durationType>quarter</durationType></Rest>
+        <Chord><durationType>16th</durationType></Chord>
+      </voice></Measure></Staff>
+      <Staff id="2"><Measure><voice>
+        <TimeSig><sigN>4</sigN><sigD>4</sigD></TimeSig>
+        <Rest><durationType>half</durationType></Rest>
+        <Rest><durationType>quarter</durationType></Rest>
+        <Rest><durationType>16th</durationType></Rest>
+        <Chord><durationType>16th</durationType></Chord>
+      </voice></Measure></Staff>
+    </Score></museScore>"""
+    root = ET.fromstring(xml)
+    make_anacrusis(root, 3)
+    for staff in root.iter("Staff"):
+        m1 = staff.find("Measure")
+        assert m1.get("len") == "1/4", f"len={m1.get('len')}"
+        assert m1.findtext("irregular") == "1"
+        rests = m1.findall("voice/Rest")
+        # staff 1 keeps none, staff 2 keeps its in-pickup 16th rest
+        assert all(r.findtext("durationType") == "16th" for r in rests)
+    assert len(list(root.iter("Chord"))) == 2
+    print("ok: anacrusis strips pad rests, shrinks measure, keeps pickup content")
+
+
 if __name__ == "__main__":
     test_cc64_from_schedule()
     test_strip_beam_modes()
+    test_make_anacrusis()
