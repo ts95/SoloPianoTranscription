@@ -303,6 +303,16 @@ stage:
   vs pipeline (a defect that recurs at every family instance identically is
   the performance; one that differs from clean instances is the pipeline),
   (5) fix code (with regression test) or the piece, then re-deliver.
+- **Family reference is mandatory for fine adjustments (rule).** Before any
+  by-ear micro-correction, locate the figure's siblings elsewhere in the
+  piece (`score_query family`) and use the cleanly played instances as
+  ground truth: the correction target is the family skeleton, not the
+  locally-nearest slot. Family evidence outranks local heuristics in both
+  directions — Mirrors bar 7 was the bars-3/5 line played ~0.28 late and
+  belonged on their exact rhythm (whole-line shift, not per-onset honesty),
+  and its "ghost" E♭4 turned out to be the family voicing brushed lightly
+  (kept, overturning the brush-drop heuristic). Only when a figure has no
+  clean sibling does local evidence (IOI ratios, slots) decide.
 
 **Token-efficient purpose-built tools** (the session's hand-written inline
 analyses, hardened into one CLI — `scripts/score_query.py`):
