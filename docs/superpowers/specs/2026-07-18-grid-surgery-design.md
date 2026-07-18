@@ -139,8 +139,9 @@ or level-hop suspects. The loop:
    - periods growing smoothly toward the end → **real ritardando** (tail op
      if the tracker raced it, otherwise leave)
 3. Write the surgery plan; `repair`; re-`diagnose`.
-4. Iterate until windows are clean or residuals are at the piece's
-   performance-class ceiling (cite the ceiling when stopping).
+4. Iterate until windows are clean and fit ≈ 0.99 — escalating through
+   methods per Addendum 3; stopping below target requires written proof of
+   irreducibility, not a class-ceiling citation.
 5. Record the surgery (plan file name, before/after fit) in CLEANUP_NOTES,
    including the standing caveat that repaired-span bar phase was chosen by
    continuity.
@@ -148,19 +149,27 @@ or level-hop suspects. The loop:
 cleanup-score's current inline "hybrid repair recipe" prose is replaced by a
 pointer to this skill.
 
-## Files
+## Files (updated per Addendum 4's restructuring)
 
-- Create: `scripts/grid_surgery.py`
+- Create: `scripts/grid_surgery.py` — `diagnose` / `repair` CLI
 - Create: `scripts/test_grid_surgery.py` — synthetic fixtures: a constructed
   MIDI with (a) a known dotted-eighth hop span and (b) a known rit tail;
   assert diagnose flags them, a plan repairs them, re-probe is clean; plus
   plan-validation error cases (overlap, regression)
+- Create: `scripts/finish_score.py` — rename/absorption of
+  `apply_harmony_pedal.py` (see Addendum 4); `apply_harmony_pedal.py` deleted
+- Rename: `scripts/musescore_pedal_lib.py` → `scripts/musescore_lib.py`
 - Create: `.claude/skills/grid-surgery/SKILL.md`
 - Modify: `scripts/transcription_cleanup.py` — extract the nudge from
-  `refine_fixed_grid_to_midi` into a shared module-level function
+  `refine_fixed_grid_to_midi` into a shared module-level function; DP
+  smoothing + full-coverage extension in `cmd_beats`; `subdivision_fit`;
+  `clean --keep-window`; `verify --audio-window`; quantize out-of-grid
+  warning
+- Modify: `scripts/test_midi_pedal.py` → rename `scripts/test_finish_score.py`
+  (imports follow the rename)
 - Modify: `.claude/skills/cleanup-score/SKILL.md` — grid section points at
-  the grid-surgery skill
-- Modify: `CLAUDE.md`, `README.md` — document the new script + skill
+  the grid-surgery skill; pipeline commands use `finish_score.py`
+- Modify: `CLAUDE.md`, `README.md` — new scripts, renames, pipeline commands
 
 ## Addendum (2026-07-18, from the Mirrors rerun)
 
@@ -224,6 +233,53 @@ in the toolkit as defaults:
    `grid_fit_probe` computes `subdivision_fit`; the bake-off compares both
    (a from-midi win that holds on subdivision_fit is real — Mirrors: 0.972
    vs refine's 0.928, so the ranking stood).
+
+## Addendum 3 (2026-07-18): the fit target is ~0.99 — iterate until reached or provably irreducible
+
+The stop criterion changes. The old "performance-class ceilings"
+(jittery syncopated ≈ 0.85–0.90 etc.) were calibrated on *raw* grids; the
+smoothing pass showed they were partly artifacts of the method, not the
+performance (Mirrors: raw 0.980 → smoothed 0.989). The loop's goal is now:
+
+- **Target: onset fit ≈ 0.99** (and subdivision_fit close behind).
+- Below target, do not stop — escalate through methods: smoothing variants
+  (window sizes, median vs mean), per-section lattices with scanned periods,
+  finer piecewise splits, span-local re-anchoring, tail cluster-tracking,
+  alternative candidates per span (each grid family per region), and any
+  new deterministic method that the diagnosis suggests. Each attempt is
+  measured; keep the best.
+- Stopping below ~0.99 requires **written proof of irreducibility** in
+  CLEANUP_NOTES: name the residual spans and the discriminating measurement
+  showing no lattice can fit them (e.g. free per-window scans also score low
+  → genuine rubato/fermata; asynchronous rolled attacks wider than the 0.07
+  tolerance). "This class of piece usually scores X" is no longer an
+  acceptable stop reason on its own.
+- The old class ceilings survive only as *expectations* (what typically
+  needs escalation), not as stop lines.
+
+## Addendum 4 (2026-07-18): script naming and structure cleanup
+
+`apply_harmony_pedal.py` has accreted unrelated responsibilities (harmony
+pedaling, CC64-to-MIDI write, forced-beam stripping, anacrusis conversion)
+— it is really the **post-import .mscz finishing pass**, and its name no
+longer describes it. Restructure during implementation:
+
+- **`scripts/finish_score.py`** (new home, `apply_harmony_pedal.py` deleted):
+  one CLI over the finishing pass on a fresh `.mscz` —
+  `finish_score.py <file.mscz> [--anacrusis N] [--midi <cleaned.mid>
+  --beats <beats.json>] [--staff N] [--keep-backup]`.
+  Order of operations: anacrusis conversion → harmony-pedal analysis +
+  insertion → forced-BeamMode strip → repackage. Internals live in named
+  functions (`make_anacrusis`, `strip_beam_modes`, `write_midi_pedal`,
+  pedaling flow) so each stays independently testable.
+- **`scripts/musescore_lib.py`** (rename of `musescore_pedal_lib.py`): the
+  mscx plumbing (extract/repackage, staff/measure access) is general
+  MuseScore-file infrastructure, not pedal-specific; the pedal-schedule
+  helpers stay in it (moving them further is not worth a third module).
+- `scripts/test_midi_pedal.py` → `scripts/test_finish_score.py`.
+- `analyze_pedaling.py` unchanged (single clear responsibility).
+- All pipeline commands, skills, CLAUDE.md and README references update to
+  `finish_score.py` in the same delivery — no transition period, no alias.
 
 ## Out of scope (YAGNI)
 
