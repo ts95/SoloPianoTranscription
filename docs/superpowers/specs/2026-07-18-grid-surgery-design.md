@@ -186,6 +186,45 @@ Mirrors rerun's better grid took the applied count from 1 to 0 while bars
 2 and 4 still engraved identically; a candidate grid that reduces applied
 repeat-fixes (without introducing rhythm divergence in verify) is preferred.
 
+## Addendum 2 (2026-07-18, from the Mirrors rerun's ear-reported defects)
+
+The user heard two defects in the rerun ("the very first bar rushes — onsets
+and durations wrong" and "at the boundary between bars, the rhythm is
+sometimes off"). Both were measured, root-caused, fixed by hand, and belong
+in the toolkit as defaults:
+
+1. **DP grids must be smoothed (`beats --from-midi` default post-pass).**
+   The onset-DP places beats *at* played onsets, so its beat-to-beat periods
+   jitter (Mirrors: median period jump 16 ms, 161 jumps >30 ms across 614
+   beats — vs 6 ms for refine). A beat displaced 40+ ms pushes notes played
+   on adjacent 16ths across slot boundaries → wrong engraved rhythms near
+   barlines, invisible in aggregate fit. Fix, now standard: moving-median
+   period filter (window 5) to rebuild the sequence, then the shrinking-
+   window nudge (16, 12, 8, 6, 4) back onto the onsets. Mirrors result: fit
+   0.980 → 0.989, subdivision fit 0.972 → 0.988, median jump 16 → 5 ms,
+   >30 ms jumps 161 → 15. The smoothing runs inside `cmd_beats` for
+   `--from-midi`; the report carries `raw_fit` and (smoothed) `onset_grid_fit`.
+
+2. **Full-coverage rule: the grid must cover every onset.** The DP starts at
+   its strongest chain, which can leave early free material (Mirrors: five
+   opening-sweep notes over 0.585 s) *before* beat 0 — quantize silently
+   crams those notes into bar 1 (the "rushed first bar"). Fix, now standard:
+   extend the grid backward (and forward) by extrapolating the boundary
+   period, prepending in **multiples of 4 beats** so downbeat phase is
+   preserved and the early material becomes pickup content in a mostly-rest
+   bar 1. Bonus observed: with real coverage, quantize's pickup inference
+   fired correctly (confidence 0.62, "bar 1 opens with 3 beats of rest").
+   `quantize` additionally gets a loud warning when any onset falls outside
+   the beat grid.
+
+3. **`subdivision_fit` joins the metrics.** Because the DP anchors beats on
+   onsets, on-beat fit is partly self-fulfilling (Mirrors slot histogram:
+   1341 on-beat for from-midi vs 878 for refine on the same notes). The
+   honest comparator is fit over non-beat slots only. `beats` reports and
+   `grid_fit_probe` computes `subdivision_fit`; the bake-off compares both
+   (a from-midi win that holds on subdivision_fit is real — Mirrors: 0.972
+   vs refine's 0.928, so the ranking stood).
+
 ## Out of scope (YAGNI)
 
 - Workflow-tool multi-agent orchestration (bake-off parallelism is already
