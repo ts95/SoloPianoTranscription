@@ -1868,24 +1868,31 @@ def grid_fit_probe(mid_path, beats, midi_shift=0.0, window=16, step=8):
     def fit_between(t0, t1):
         seg = [t for t in onsets if t0 <= t < t1]
         if not seg:
-            return None, 0
-        n_in = 0
+            return None, 0, None
+        n_in = sub_in = sub_tot = 0
         for t in seg:
             i = _bisect.bisect_right(beats, t) - 1
             i = max(0, min(i, len(beats) - 2))
             frac = (t - beats[i]) / (beats[i + 1] - beats[i])
             pos = i + frac
-            if abs(pos * 4 - round(pos * 4)) / 4 <= 0.07:
+            f = pos - int(pos)
+            slot = round(f * 4) / 4
+            hit = abs(f - slot) <= 0.07
+            if hit:
                 n_in += 1
-        return n_in / len(seg), len(seg)
+            if slot % 1 != 0:
+                sub_tot += 1
+                if hit:
+                    sub_in += 1
+        return n_in / len(seg), len(seg), (sub_in / sub_tot if sub_tot else None)
 
-    global_fit, _ = fit_between(beats[0], beats[-1])
+    global_fit, _, sub_fit = fit_between(beats[0], beats[-1])
     periods = [b - a for a, b in zip(beats, beats[1:])]
     med = statistics.median(periods)
     weak, hops = [], []
     for i0 in range(0, len(beats) - window, step):
         i1 = i0 + window
-        f, n = fit_between(beats[i0], beats[i1])
+        f, n, _ = fit_between(beats[i0], beats[i1])
         wmed = statistics.median(periods[i0:i1])
         ratio = wmed / med
         entry = {"beats": [i0, i1], "bar_approx": [i0 // 4 + 1, i1 // 4 + 1],
@@ -1898,6 +1905,7 @@ def grid_fit_probe(mid_path, beats, midi_shift=0.0, window=16, step=8):
             hops.append(entry)
     return {
         "onset_grid_fit": round(global_fit, 3) if global_fit is not None else None,
+        "subdivision_fit": round(sub_fit, 3) if sub_fit is not None else None,
         "weak_windows": weak,
         "level_hop_suspects": hops,
         "note": ("weak_windows: fit < 0.85 over a 16-beat window — localized grid "

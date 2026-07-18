@@ -82,7 +82,35 @@ def test_extend_grid_coverage_pickup():
     print("ok: coverage extension prepends pickup bars, appends tail")
 
 
+def test_subdivision_fit_debiases_onbeat_anchoring():
+    import json, tempfile, os
+    import pretty_midi
+    from transcription_cleanup import grid_fit_probe
+    with tempfile.TemporaryDirectory() as d:
+        mid = os.path.join(d, "t.mid")
+        pm = pretty_midi.PrettyMIDI(initial_tempo=120)
+        inst = pretty_midi.Instrument(program=0)
+        # onsets exactly on every beat; subdivision onsets displaced +60 ms
+        for k in range(64):
+            t = k * 0.5
+            inst.notes.append(pretty_midi.Note(velocity=80, pitch=60,
+                                               start=t, end=t + 0.1))
+            inst.notes.append(pretty_midi.Note(velocity=80, pitch=64,
+                                               start=t + 0.25 + 0.06,
+                                               end=t + 0.35))
+        pm.instruments.append(inst)
+        pm.write(mid)
+        beats = [k * 0.5 for k in range(65)]
+        p = grid_fit_probe(mid, beats, 0.0)
+        assert "subdivision_fit" in p
+        assert p["subdivision_fit"] < 0.5 <= p["onset_grid_fit"], (
+            f"subdivision_fit {p['subdivision_fit']} should expose the "
+            f"off-slot subdivisions that on-beat fit {p['onset_grid_fit']} hides")
+    print("ok: subdivision_fit exposes off-slot subdivisions")
+
+
 if __name__ == "__main__":
     test_gap_bridging()
     test_smooth_dp_beats_kills_jitter()
     test_extend_grid_coverage_pickup()
+    test_subdivision_fit_debiases_onbeat_anchoring()
