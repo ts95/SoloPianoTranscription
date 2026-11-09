@@ -14,6 +14,7 @@ Pipeline for transcribing solo piano performances from YouTube into editable she
 - If `.venv` doesn't exist: `python3.11 -m venv .venv && .venv/bin/pip install transkun yt-dlp music21 'llvmlite==0.42.0' 'numba==0.59.1' librosa` (pulls PyTorch, ~2 GB; llvmlite/numba are pinned because newer releases ship no x86_64 macOS wheels).
 - `scripts/transcription_cleanup.py` (run with `.venv/bin/python`) provides `analyze` / `clean` / `verify` / `consensus` subcommands used by the pipeline and `cleanup-score` skills. (The MIDI → MusicXML stage is DuET, not this script.)
 - `scripts/set_score_metadata.py <in> <out> --title --composer [--arranger] [--performer]` — sets the score header metadata on a DuET `score.musicxml`, editing only the `<work>`/`<identification>` header so the engraved content is left untouched.
+- `scripts/normalize_meter_tempo.py <in> <out> --tempo <bpm> --meter <B/T>` — overrides DuET's model-inferred meter/tempo with the ground-truth values: sets ONE constant quarter-note tempo and rewrites every bar to a single meter, trimming any overfull bar's trailing beats. Run it right after DuET (on `<slug>.musicxml`) when the web ground-truth meter/tempo differs from what DuET engraved. Targeted text edit (NOT a music21 round-trip); tick-based and chord-aware, so the rest of the engraving is left intact.
 - `scripts/prepare_audio.sh <in> <out.wav>` — two-pass linear loudness normalization + 44.1 kHz resample; run on all audio before Transkun.
 - `scripts/apply_harmony_pedal.py <file.mscz>` — adds harmony-aware legato pedaling to a `.mscz` from the engraved harmony (one pedal per bar, split at harmony changes), via `analyze_pedaling.py` + `musescore_pedal_lib.py`. Use instead of CC64-derived pedal, which is binary and doesn't track harmony.
 - `scripts/simplify_score.py <in.musicxml> -o <out.musicxml>` — optional playability reduction for dense/stacked scores: thins off-beat repeat strikes to the melody skeleton, reduces large LH stacks to bass+partner, and caps voice spans by dropping doubled pitch classes or octave-folding (never losing the harmony). Standalone MusicXML→MusicXML; run on a DuET score when it's too dense to play.
@@ -74,6 +75,15 @@ scripts/duet.sh 'output/<slug>/<slug>.cleaned.mid' -o "$D" --device cpu
 mv "$D"/* 'output/<slug>/'
 mv 'output/<slug>/score.musicxml' 'output/<slug>/<slug>.musicxml'
 rm -rf "$(dirname "$D")"
+
+# 4b. (Optional) Override DuET's inferred meter/tempo with the ground truth. DuET
+#     infers both from the model and can get them wrong (e.g. a 3/4 piece engraved
+#     as mixed 3/4/4/4 with tempo changes). Run when the web ground-truth meter/tempo
+#     is known and differs: sets one constant tempo + one consistent meter, trimming
+#     overfull bars. Verify the trimmed beats by ear.
+.venv/bin/python scripts/normalize_meter_tempo.py \
+  'output/<slug>/<slug>.musicxml' 'output/<slug>/<slug>.musicxml' \
+  --tempo <bpm> --meter <B/T>
 
 # 5. Set the score header metadata (DuET only writes a filename-derived title)
 .venv/bin/python scripts/set_score_metadata.py \
@@ -137,6 +147,8 @@ After producing any score, inspect it for statistical outliers — transcription
 - **Never import a `.mid` into MuseScore** (CLI or GUI) — its quantization auto-detects its own tempo, ignores the tempo and time-signature meta events, and can lock onto a sub-pulse, wronging every barline and spraying fake tuplets. All MIDI → MusicXML goes through **DuET** (`scripts/duet.sh`); mscore is only for `.musicxml` → `.mscz`/PDF format conversion.
 - **DuET never overwrites**: `-o` must point at a directory that does not already exist (the default `results/<name>/` auto-numbers, but an explicit `-o` that exists is rejected with "File exists"). So point `-o` at a fresh *subdir* under a `mktemp -d` base (e.g. `D=$(mktemp -d)/duet`) — not at the pre-created base dir itself — and move the outputs in.
 - **DuET copies every input note** into the score (one score record per retained input note, pitch copied from the input). Artifact removal in the clean pass is therefore what keeps Transkun ghosts/duplicates out of the engraving — don't skip it.
+- **Cleanup is skippable (with a trade-off)**: you can feed the raw `<slug>.mid` (not `.cleaned.mid`) straight to DuET to skip artifact removal. The score then includes Transkun ghosts/duplicates. Use it only when you deliberately want the most faithful (if noisier) engraving — e.g. to compare against the cleaned version.
+- **DuET infers meter and tempo from the model — they can be wrong.** It has no meter/tempo override flag, so if the web ground-truth meter/tempo is known and differs from what DuET engraved (e.g. a 3/4 piece rendered as mixed 3/4/4/4 with tempo changes), run `scripts/normalize_meter_tempo.py --tempo <bpm> --meter <B/T>` right after DuET. It forces one constant tempo + one consistent meter and trims overfull bars; the trimmed beats are removed content, so verify them by ear.
 - **Score metadata rule**: every delivered `.musicxml`/`.mscz` must carry the piece metadata in its header via `scripts/set_score_metadata.py --title/--composer/--arranger/--performer` — title and original composer/artist always; arranger when it's an arrangement/cover with a known author; performer when the pianist is known. DuET only writes a filename-derived title, so this step is required.
 - zsh does not word-split unquoted variables; don't stash multi-word commands in shell variables.
 - **Never prepend `cd` to pipeline commands.** The Bash working directory is already the repo root and persists between calls, and every command here uses repo-relative paths (`.venv/bin/…`, `scripts/…`, `output/<slug>/…`) that resolve from there. Invoke them directly — a `cd … &&` prefix only adds a needless permission prompt.

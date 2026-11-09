@@ -24,7 +24,7 @@ Tools: `scripts/transcription_cleanup.py` (run with `.venv/bin/python`) for `ana
 
 Identify the piece from the slug / video title (composer, work, movement). Web-search for authoritative facts: **key signature, meter, tempo marking, and the composer/arranger/performer credits** (needed for the score header). Good sources: Wikipedia, IMSLP, composer catalogs; for unpublished pieces, the video description/comments or reviews often still state key or meter. Record everything found with source URLs. Finding nothing is fine — analysis is the fallback.
 
-These facts serve two purposes: (a) they set the `<slug>.cleaned.mid` tempo/meter/key meta (step 3), and (b) they cross-check **DuET's own inferred key/meter** — DuET decides the score's key and meter from the model, so if ground truth disagrees with what DuET engraved, flag it prominently (DuET's `report.json`/`review.json` record its key decisions).
+These facts serve two purposes: (a) they set the `<slug>.cleaned.mid` tempo/meter/key meta (step 3), and (b) they cross-check **DuET's own inferred key/meter/tempo** — DuET decides the score's key, meter, and tempo from the model, so if ground truth disagrees with what DuET engraved, fix what's decidable and flag the rest (DuET's `report.json`/`review.json` record its key decisions). For meter/tempo there is a fix: run `scripts/normalize_meter_tempo.py --tempo <bpm> --meter <B/T>` on `<slug>.musicxml` right after DuET (see the `midi-to-musicxml` skill, step 2) to force the ground-truth values.
 
 ## 2. Analyze (statistical second opinion)
 
@@ -52,11 +52,11 @@ Interpret with musical judgment:
 
 ## 4. Engrave the score with DuET (skip if `<slug>.musicxml` already exists)
 
-Follow the `midi-to-musicxml` skill: run DuET on `<slug>.cleaned.mid` → `<slug>.musicxml`, set the metadata (title/composer/arranger/performer from step 1), convert to `.mscz`/`.pdf`, and add harmony pedaling. DuET infers the score's own key/meter/tempo and engraves runs, glissandi, and hand assignment — there is no BPM grid to pick and no quantize/post step.
+Follow the `midi-to-musicxml` skill: run DuET on `<slug>.cleaned.mid` → `<slug>.musicxml`, **normalize the meter/tempo to ground truth if they disagree** (step 2 of that skill — DuET infers both from the model and has no override flag; a common failure is a piece in one meter rendered with mixed meters and tempo changes), set the metadata (title/composer/arranger/performer from step 1), convert to `.mscz`/`.pdf`, and add harmony pedaling. DuET infers the score's own key/meter/tempo and engraves runs, glissandi, and hand assignment — there is no BPM grid to pick and no quantize/post step.
 
 ## 5. Verify
 
-Structural checks: mscore exited 0 for the `.mscz`; originals untouched; the score's engraved key/meter (from `report.json`) matches ground truth or is flagged.
+Structural checks: mscore exited 0 for the `.mscz`; originals untouched; the score's engraved key/meter (from `report.json`) matches ground truth or is flagged; if the meter/tempo were normalized, every measure is tick-balanced for the target meter and there is exactly one metronome mark at the ground-truth BPM.
 
 **Note-type histogram**: `grep -o "<type>[a-z0-9]*</type>" '<slug>.musicxml' | sort | uniq -c`. A handful of 32nds/64ths/128ths scattered one-at-a-time through an otherwise steady texture are artifacts; the same values in one contiguous run are likely a real flourish. Judge outliers in context.
 
@@ -87,7 +87,7 @@ Suspects (notes that vanish under pitch shift) are flagged in the notes, never d
 Three sections:
 
 1. **Ground truth used** — piece identification and the key/meter/tempo + composer/arranger/performer facts applied, with source URLs (or "none found — used statistical analysis"). Note where DuET's engraved key/meter agrees or disagrees with ground truth.
-2. **Changed automatically** — every transform with counts: artifact/ghost/duplicate removals (from `clean_report.json`), the DuET engraving version (from `report.json`), metadata set, harmony-pedal measures.
+2. **Changed automatically** — every transform with counts: artifact/ghost/duplicate removals (from `clean_report.json`), the DuET engraving version (from `report.json`), meter/tempo normalization (from the normalizer's report: which measures were trimmed and what was removed — trimmed beats are *removed content*, so they go in the verify-by-ear list), metadata set, harmony-pedal measures.
 3. **Verify by ear** — each flag with ≈measure + timestamp. Lead with the `verify.json` results (worst bars with mm:ss, drift suspects, repeat inconsistencies) and any consensus suspects. Then DuET's `review.json` items (key changes, borrowed chords vs modulation, low-margin spellings, runs that may be tuplets, notes written away from where they were played). Then the standing items:
    - verify pitches against the recording (the model cannot hear; wrong/missed notes are invisible in the data)
    - the downbeat anchor: if the piece opens with a pickup, every barline is shifted

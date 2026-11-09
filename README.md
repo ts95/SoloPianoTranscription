@@ -102,6 +102,11 @@ mv "$D"/* output/<slug>/
 mv output/<slug>/score.musicxml output/<slug>/<slug>.musicxml
 rm -rf "$(dirname "$D")"
 
+# (Optional) If DuET's inferred meter/tempo disagree with the ground truth,
+# force a constant tempo + one consistent meter (trims overfull bars).
+.venv/bin/python scripts/normalize_meter_tempo.py \
+  output/<slug>/<slug>.musicxml output/<slug>/<slug>.musicxml --tempo <bpm> --meter <B/T>
+
 .venv/bin/python scripts/set_score_metadata.py \
   output/<slug>/<slug>.musicxml output/<slug>/<slug>.musicxml \
   --title '<title>' --composer '<composer>'
@@ -144,6 +149,7 @@ was decided automatically and the prioritized list of what to verify by ear.
 
 - Transkun is trained on **solo piano**. Recordings with other instruments, vocals, or heavy room noise will transcribe poorly.
 - The MIDI Transkun produces has **performance timing** (exactly as played, unquantized). DuET engraves it into notation: it infers the key signature, meter, and tempo from the model, spells notes against the key, assigns hands and staff, turns fast runs into grace notes, and writes glissandi as glissando lines. It copies every input note into the score, so the artifact-removal clean pass is what keeps Transkun ghosts and duplicates out of the engraving. Generated scores carry title/composer/arranger/performer metadata in the document header (set by `scripts/set_score_metadata.py`). The `cleanup-score` skill handles the data-decidable part; what remains for a human ear is verifying pitches against the recording, the downbeat/pickup anchor, rubato barlines, ornaments, and dynamics/phrasing — listed per piece in `CLEANUP_NOTES.md`.
+- DuET infers the meter and tempo from the model, and that inference can be wrong (e.g. a 3/4 piece rendered with mixed meters and tempo changes). When the true meter/tempo is known, `scripts/normalize_meter_tempo.py --tempo <bpm> --meter <B/T>` forces a constant tempo and one consistent meter (trimming overfull bars) — run it right after DuET.
 - Transcription (Transkun) and engraving (DuET) each run on CPU by default; expect a few minutes per piece.
 - **The engraved score will feel less expressive than the cleaned MIDI, and that is partly unavoidable.** A score is a lossy, discrete re-interpretation of a performance; engraving necessarily deletes the micro-timing, true durations, and continuous dynamics that make the MIDI sound alive. See [docs/WHY_MIDI_TO_SCORE_IS_HARD.md](docs/WHY_MIDI_TO_SCORE_IS_HARD.md) for the research literature on why this conversion is uniquely hard, which of our failures are irreducible vs. fixable, and the concrete roadmap for the fixable ones.
 - Only transcribe recordings for personal study/use, and respect the rights of performers and composers.
