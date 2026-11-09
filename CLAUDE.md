@@ -65,13 +65,15 @@ mv 'output/<slug>/<slug>.prepared.wav' 'output/<slug>/<slug>.wav'
   --time-sig '<ts>' --key '<key>' --tempo <bpm> --report 'output/<slug>/clean_report.json'
 
 # 4. MIDI → MusicXML (DuET — NEVER MuseScore's MIDI import). DuET infers its own
-#    key/meter/tempo and engraves runs/glissandi/hands. Run into a fresh dir (DuET never
-#    overwrites), move the outputs in, rename the score to the slug.
-D=$(mktemp -d)
+#    key/meter/tempo and engraves runs/glissandi/hands. -o must be a directory that does
+#    NOT exist yet (DuET creates it and refuses to overwrite an existing one — passing a
+#    pre-created `mktemp -d` dir fails with "File exists"), so point it at a fresh subdir
+#    under a mktemp base; move the outputs in, rename the score to the slug.
+D=$(mktemp -d)/duet
 scripts/duet.sh 'output/<slug>/<slug>.cleaned.mid' -o "$D" --device cpu
 mv "$D"/* 'output/<slug>/'
 mv 'output/<slug>/score.musicxml' 'output/<slug>/<slug>.musicxml'
-rm -rf "$D"
+rm -rf "$(dirname "$D")"
 
 # 5. Set the score header metadata (DuET only writes a filename-derived title)
 .venv/bin/python scripts/set_score_metadata.py \
@@ -133,7 +135,7 @@ After producing any score, inspect it for statistical outliers — transcription
 - `mscore` may print Qt warnings to stderr even on success — judge by exit code and whether the output file was written.
 - Quote all paths: video-title slugs can still contain characters that need quoting. (The MuseScore binary path contains a space, but `scripts/mscore.sh` hides it — call the wrapper, never the raw path.)
 - **Never import a `.mid` into MuseScore** (CLI or GUI) — its quantization auto-detects its own tempo, ignores the tempo and time-signature meta events, and can lock onto a sub-pulse, wronging every barline and spraying fake tuplets. All MIDI → MusicXML goes through **DuET** (`scripts/duet.sh`); mscore is only for `.musicxml` → `.mscz`/PDF format conversion.
-- **DuET never overwrites**: `-o` must point at a directory that does not already exist (the default `results/<name>/` auto-numbers, but an explicit `-o` that exists is rejected). Run it into a fresh temp dir and move the outputs in.
+- **DuET never overwrites**: `-o` must point at a directory that does not already exist (the default `results/<name>/` auto-numbers, but an explicit `-o` that exists is rejected with "File exists"). So point `-o` at a fresh *subdir* under a `mktemp -d` base (e.g. `D=$(mktemp -d)/duet`) — not at the pre-created base dir itself — and move the outputs in.
 - **DuET copies every input note** into the score (one score record per retained input note, pitch copied from the input). Artifact removal in the clean pass is therefore what keeps Transkun ghosts/duplicates out of the engraving — don't skip it.
 - **Score metadata rule**: every delivered `.musicxml`/`.mscz` must carry the piece metadata in its header via `scripts/set_score_metadata.py --title/--composer/--arranger/--performer` — title and original composer/artist always; arranger when it's an arrangement/cover with a known author; performer when the pianist is known. DuET only writes a filename-derived title, so this step is required.
 - zsh does not word-split unquoted variables; don't stash multi-word commands in shell variables.

@@ -15,14 +15,14 @@ Input: a path to a `.mid` file. In the pipeline this is the cleaned `output/<slu
 
 ## 1. Run DuET
 
-DuET writes to a **new** directory and never overwrites an existing one, so run it into a fresh temp dir and move the outputs in:
+DuET's `-o` must point at a directory that **does not exist yet** — it creates that directory and refuses to overwrite an existing one (a pre-created `mktemp -d` dir fails with "File exists"). Point it at a fresh subdir under a mktemp base, then move the outputs in:
 
 ```bash
-D=$(mktemp -d)
+D=$(mktemp -d)/duet
 scripts/duet.sh 'output/<slug>/<slug>.cleaned.mid' -o "$D" --device cpu
 mv "$D"/* 'output/<slug>/'
 mv 'output/<slug>/score.musicxml' 'output/<slug>/<slug>.musicxml'
-rm -rf "$D"
+rm -rf "$(dirname "$D")"
 ```
 
 - `--device cpu` on a Mac (no CUDA). Takes a couple of minutes per piece — run it in the background and wait; slow is normal, don't assume it hung.

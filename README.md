@@ -96,11 +96,11 @@ ffmpeg -i output/<slug>/<slug>.wav -codec:a libmp3lame -q:a 0 output/<slug>/<slu
 .venv/bin/python scripts/transcription_cleanup.py clean \
   output/<slug>/<slug>.mid output/<slug>/<slug>.cleaned.mid --time-sig <ts> --key '<key>' --tempo <bpm>
 
-D=$(mktemp -d)
+D=$(mktemp -d)/duet
 scripts/duet.sh output/<slug>/<slug>.cleaned.mid -o "$D" --device cpu
 mv "$D"/* output/<slug>/
 mv output/<slug>/score.musicxml output/<slug>/<slug>.musicxml
-rm -rf "$D"
+rm -rf "$(dirname "$D")"
 
 .venv/bin/python scripts/set_score_metadata.py \
   output/<slug>/<slug>.musicxml output/<slug>/<slug>.musicxml \
