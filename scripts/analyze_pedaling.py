@@ -19,10 +19,11 @@ longer emits `skip`; silent/sustained bars still get a single pedal.
 import argparse
 import json
 import os
+import tempfile
 import sys
 import shutil
 
-from musescore_lib import (
+from musescore_pedal_lib import (
     extract_mscz, extract_measure_data, find_mscx_in_dir,
     PC_NAMES, get_time_sig_ticks, _HALF_BAR_OK,
 )
@@ -275,7 +276,7 @@ def main():
         sys.exit(1)
 
     # Extract
-    extract_dir = '/tmp/mscz_analyze_extract'
+    extract_dir = os.path.join(tempfile.gettempdir(), 'mscz_analyze_extract')
     mscx_path = extract_mscz(args.mscz, extract_dir)
 
     # Determine staff IDs to analyze (always include both staves for grand staff analysis)

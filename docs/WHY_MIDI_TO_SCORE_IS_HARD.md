@@ -150,57 +150,6 @@ If the beat grid is wrong, *every* downstream decision is wrong — melody lands
 slot, durations fragment, barlines drift. And beat trackers fail in a characteristic way: they
 lock onto a metrically-strong *sub-pulse* rather than the true beat.
 
-> **[this repo] Coffin Dance (2026-07): the failure is comparative, and "sounds steady" is
-> not evidence.** `analyze` reported heavy rubato (CV 0.35) on a straight-eighth ostinato; the
-> operator overrode it ("dense figuration fooling the windowed estimate") and shipped a
-> hint-pinned refined grid with onset fit 0.67–0.78 — which engraved straight eighths as
-> dotted figures and 144 spurious 16ths, and drove the repeat-alignment pass to "fix" 5
-> phantom rushed repeats (identical bars drifting against the grid). The onset-DP grid
-> (`beats --from-midi`) scored **0.994** on the same onsets, collapsed the subdivision profile
-> to the true 182-eighths/2-sixteenths, zeroed the phantom repeat fixes, and tracked the
-> closing ritardando exactly. Two lessons now encoded as a rule: (a) the rubato verdict is a
-> *measurement* — do not override it with a genre prior; (b) grid selection is a comparison:
-> build both candidate grids and take the one with the higher onset fit, since a "healthy
-> looking" 0.7 is indefensible the moment another grid reaches 0.99 on identical data.
->
-> **[this repo] Make Things For Smile (2026-07): the comparison rule survives its hardest
-> case, with one added instrument.** A second Skrillex 3-3-2 cover with the same
-> autocorrelation signature (85.7/171.4 candidates) — precisely the regime where the repo's
-> earlier lesson said "onset-DP smears between metrical layers, use refine." Measured instead:
-> refine scored 0.61/0.79/0.83 across hints 120/125/128.5; `--from-midi` scored **0.874** and
-> won. The catch is that on syncopated music a from-midi win must be authenticated before use —
-> the failure mode it risks is locking onto the accent layer. The probe: inspect the winning
-> grid's beat-period *sequence*. Genuine tracking is smooth (here: median 0.46 s, CV 0.096, 9%
-> of periods jumping >15%, no fast/slow alternation); accent-chasing oscillates between layers
-> (the 0.35/0.7 s signature). Result: a difficult, humanly-jittery syncopated performance
-> engraved as a usable foundation — dotted-quarter 3-3-2 bass under coherent 16ths — at a fit
-> (0.874) that is the realistic *ceiling* for this performance class, not a deficiency.
-> Calibration across the repo's pieces: sequenced ≈ 1.0, steady human ≈ 0.99, jittery
-> syncopated human ≈ 0.85–0.90. Priors pick candidates; measurements pick winners; probes
-> authenticate the winner.
->
-> **[this repo] Cry Me A River (2026-07): the probe itself needed hardening — global
-> statistics hide local level hops.** The from-midi grid won the bake-off at 0.940 and
-> passed the global probe (period CV 0.072, 4.7% jumps, no alternation). The user's ear
-> found what the numbers hid: from bar 72 the bridge's rhythm "broke down completely."
-> Per-bar measurement showed the DP had hopped to the dotted-eighth layer (period 0.84 s
-> → 0.65 s = ×3/4, engraved as a fake ♩=91) through the bridge, and raced at a fake-fast
-> tempo through the closing ritardando — two localized failures averaging into clean
-> global stats. The underlying identifiability problem: both regions are continuous
-> even-16th washes, where *every* sub-multiple grid and every 16th-shifted phase fits the
-> onsets perfectly (measured: fit invariant under quarter-beat phase shifts). Onset
-> evidence cannot choose the metrical level or the bar phase there — only continuity with
-> the surrounding sections can, which is a structural argument, not a local-evidence one.
-> The repair was piecewise by provenance: keep the from-midi beats where windowed fit was
-> clean (body 0.997, slow section 0.958), rebuild the flagged spans as one continuous
-> lattice anchored on the last trustworthy downbeat (level and phase inherited by
-> continuity, drift absorbed by refine-style nudging), and track the final ritardando
-> from raw note-cluster spacing (beat = 4 × local 16th gap; periods grew 0.95 → 1.16 →
-> 1.48 s, matching the performance). Global fit rose to 0.978 with no level hops. The
-> windowed probe (`weak_windows` / `level_hop_suspects`) is now computed by the `beats`
-> subcommand on every run: measurements pick winners, probes authenticate the winner —
-> and probes must be local, because failure is.
->
 > **[this repo] The Skrillex 3-3-2 groove is a textbook case.** Autocorrelation BPM candidates
 > were 85.7 / 171.4; the *true* tempo was ~128.5 — the trackers had locked onto the dotted-eighth
 > of the 3-3-2 pattern (4/3 of the real beat). Both the audio tracker *and* the onset-DP tracker

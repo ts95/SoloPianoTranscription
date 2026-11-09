@@ -7,10 +7,10 @@ Transcribe solo piano performances from YouTube into editable sheet music, for p
 > transcription for you — it is **not** a performance-ready edition. Converting a
 > performance to notation is fundamentally lossy and imperfect (see
 > [§ Limitations](#limitations-the-score-is-a-foundation)), so the result will
-> contain wrong/missed notes, approximate rhythms, and rough voicing, pedaling,
-> and dynamics. **The rest is expected to be finished by hand** in MuseScore,
-> guided by `CLEANUP_NOTES.md` and the recording. The goal is to get you to ~80%
-> in minutes instead of hours, not to hand you a final score.
+> contain wrong/missed notes, approximate rhythms, and rough voicing and pedaling,
+> and **no dynamics** (add those by hand). **The rest is expected to be finished
+> by hand** in MuseScore, guided by `CLEANUP_NOTES.md` and the recording. The goal
+> is to get you to ~80% in minutes instead of hours, not to hand you a final score.
 
 ```
 YouTube link
@@ -20,14 +20,15 @@ output/<slug>/<slug>.wav  (+ <slug>.mp3 listening copy)
     │  Transkun v2 (automatic piano transcription)
     ▼
 output/<slug>/<slug>.mid          ← raw transcription (the faithful "recording")
-    │  cleanup-score: clean the MIDI, quantize (music21; fixed-BPM grid, or a
-    │  beat-tracked grid from librosa when the performance has rubato), engrave
-    │  notation (spelling, ties, clef changes, velocity dynamics), add harmony-
-    │  aware pedaling, clean the MusicXML, render via MuseScore 4 CLI
+    │  cleanup-score: remove MIDI artifacts (ghosts, duplicates), then
+    │  DuET (a learned MIDI→score model) engraves readable notation — its own
+    │  key/meter/tempo, spelling, hand assignment, runs→grace notes, glissandi —
+    │  set the header metadata, add harmony-aware pedaling, render via MuseScore 4 CLI
     ▼
 output/<slug>/
     ├── <slug>.cleaned.mid                       ← cleaned MIDI (the editable "recording")
     ├── <slug>.mscz / .musicxml / .pdf           ← THE score foundation (one deliverable)
+    ├── score.mid, review.json, report.json, …   ← DuET's listening MIDI + diagnostics
     └── CLEANUP_NOTES.md                         ← what to finish by hand, by ear
 ```
 
@@ -37,15 +38,17 @@ performance — play it back and it sounds like the recording) and the **score**
 
 Two design rules learned the hard way:
 
-- **MuseScore never imports MIDI.** Its import quantization auto-detects its own tempo (ignoring the tempo/time-signature meta events) and can lock onto a sub-pulse — e.g. the dotted-eighth of a 3-3-2 groove, 4/3 of the true BPM — which wrongs every barline and sprays fake tuplets. All quantization happens in `scripts/transcription_cleanup.py quantize` at a caller-chosen BPM; MuseScore only converts formats.
+- **MuseScore never imports MIDI.** Its import quantization auto-detects its own tempo (ignoring the tempo/time-signature meta events) and can lock onto a sub-pulse — which wrongs every barline and sprays fake tuplets. MIDI → MusicXML goes through **DuET** (`scripts/duet.sh`), a learned model that maps the performance to engraved notation; MuseScore only converts formats.
 - **Audio is decoded once.** YouTube serves lossy audio; re-encoding it to mp3 before transcription adds a second lossy generation. The transcription input is a WAV with linear (non-dynamic) loudness normalization, so the model sees a consistent level without compressed dynamics.
 
 ## Prerequisites
 
 - macOS
 - [ffmpeg](https://ffmpeg.org/) — `brew install ffmpeg`
-- [MuseScore 4](https://musescore.org/) installed in `/Applications` (its `mscore` CLI converts `.musicxml` to `.mscz`)
+- [MuseScore 4](https://musescore.org/) installed in `/Applications` (its `mscore` CLI converts `.musicxml` to `.mscz`; the pipeline calls it through the `scripts/mscore.sh` wrapper, which honours an `MSCORE` env var if MuseScore lives elsewhere)
+- **DuET** — the MIDI → MusicXML model. It lives in a separate repo (`~/Repos/DuET`) with its own venv and a cached model; the pipeline calls it through the `scripts/duet.sh` wrapper (override the path with the `DUET` env var). See [DuET](https://github.com/wei-zeng98/DuET).
 - Python 3.11
+- [deno](https://deno.com/) — `brew install deno`. A JS runtime yt-dlp needs to solve YouTube's signature challenge; without it the download falls back to image-only formats. YouTube may *also* demand `--cookies-from-browser <browser>` to clear its bot check (see the `download-audio` skill).
 
 ## Setup
 
@@ -55,7 +58,7 @@ source .venv/bin/activate
 pip install transkun yt-dlp music21 'llvmlite==0.42.0' 'numba==0.59.1' librosa
 ```
 
-Note: `transkun` depends on PyTorch, so the install downloads roughly 2 GB. The Transkun v2 model weights ship with the pip package — no separate download needed.
+Note: `transkun` depends on PyTorch, so the install downloads roughly 2 GB. The Transkun v2 model weights ship with the pip package — no separate download needed. DuET is a separate install (its own venv + model, see Prerequisites); the pipeline only needs `scripts/duet.sh` to reach it.
 
 ## Usage
 
@@ -65,15 +68,14 @@ The easiest way is via Claude Code from this directory:
 /transcribe https://www.youtube.com/watch?v=...
 ```
 
-This runs all three stages and leaves the artifacts in `output/<slug>/`.
+This runs all the stages and leaves the artifacts in `output/<slug>/`.
 
 Each stage is also available as its own skill, useful for re-running a single step:
 
 - `/download-audio <youtube-url>` — download + prepare audio (normalized 44.1 kHz wav for transcription, mp3 for listening)
 - `/audio-to-midi <audio-file>` — transcribe audio to MIDI with Transkun
-- `/midi-to-musicxml <midi-file>` — quantize MIDI to MusicXML at a chosen BPM and convert to native MuseScore (.mscz)
-- `/cleanup-score output/<slug>/` — the full MIDI → score step. Looks up the piece's real key/meter/tempo online, removes transcription artifacts (ghost notes at piano-partial intervals, duplicates — pedal- and harmony-aware, so in-key consonant notes are flagged rather than deleted), re-quantizes onto the verified BPM grid, repairs notation (key-aware enharmonic spelling, modulation detection, staff assignment, **treble-clef switches for sustained high left-hand passages**, **whole-note bass under sustained pedal** instead of clipped notes + rests), adds **harmony-aware pedaling** (one legato pedal per bar, re-pedalled where the bass harmony changes — derived from the engraved harmony, not the transcriber's coarse binary CC64), derives dynamics and cresc./dim. hairpins from MIDI velocities, renders and compares bar-by-bar against the recording (chroma DTW — worst bars, barline drift, and repeat inconsistencies become listening priorities), and writes `CLEANUP_NOTES.md` flagging everything to finish by ear. Ends by writing `piece.json`, so any later re-delivery is one `rebuild_score.py` call. Produces one score deliverable (`.mscz`/`.musicxml`/`.pdf`). Can also stop at the cleaned `.mid` if that's all you want
-- `/grid-surgery` — diagnoses and repairs beat-grid failures (level hops, lost pulse, untracked ritardandi) that the grid bake-off flags, and runs the targeted by-ear fix loop (`score_query` map/bar/family/sweep/layout) whenever the user reports a specific bar/time span sounding wrong on an already-delivered score
+- `/midi-to-musicxml <midi-file>` — engrave MIDI to a readable MusicXML score with DuET, set the header metadata, convert to native MuseScore (.mscz), and add harmony-aware pedaling
+- `/cleanup-score output/<slug>/` — the full MIDI → score step. Looks up the piece's real key/meter/tempo and credits online, removes transcription artifacts (ghost notes at piano-partial intervals, duplicates — pedal- and harmony-aware, so in-key consonant notes are flagged rather than deleted), engraves the cleaned MIDI with DuET (its own key/meter/tempo, spelling, hand assignment, runs→grace notes, glissandi), sets the header metadata, adds **harmony-aware pedaling** (one legato pedal per bar, re-pedalled where the bass harmony changes — derived from the engraved harmony, not the transcriber's coarse binary CC64), renders and compares bar-by-bar against the recording (chroma DTW — worst bars, barline drift, and repeat inconsistencies become listening priorities), and writes `CLEANUP_NOTES.md` flagging everything to finish by ear (including DuET's own `review.json` unsure spots). Produces one score deliverable (`.mscz`/`.musicxml`/`.pdf`). Can also stop at the cleaned `.mid` if that's all you want
 
 ### Running the stages manually
 
@@ -88,36 +90,28 @@ ffmpeg -i output/<slug>/<slug>.wav -codec:a libmp3lame -q:a 0 output/<slug>/<slu
 # 2. Transcribe to MIDI (takes a few minutes on CPU)
 .venv/bin/transkun output/<slug>/<slug>.wav output/<slug>/<slug>.mid --device cpu
 
-# 3. MIDI → score. Clean the MIDI, quantize at a chosen BPM, engrave notation,
-#    add harmony-aware pedaling, render. (Usually just run /cleanup-score, which
-#    also does the web ground-truth lookup, rubato handling, and the report.)
+# 3. MIDI → score. Clean the MIDI, engrave with DuET, set metadata, add
+#    harmony-aware pedaling, render. (Usually just run /cleanup-score, which
+#    also does the web ground-truth lookup and the report.)
 .venv/bin/python scripts/transcription_cleanup.py clean \
-  output/<slug>/<slug>.mid output/<slug>/<slug>.cleaned.mid --time-sig <ts> --key '<key>'
-.venv/bin/python scripts/transcription_cleanup.py quantize \
-  output/<slug>/<slug>.cleaned.mid output/<slug>/<slug>.tmp.musicxml --bpm <bpm> \
-  --key '<key>' --time-sig <ts> --title '<title>' --composer '<composer>'
-.venv/bin/python scripts/transcription_cleanup.py post \
-  output/<slug>/<slug>.tmp.musicxml output/<slug>/<slug>.musicxml \
-  --key '<key>' --time-sig <ts> --dynamics-from output/<slug>/<slug>.cleaned.mid
-rm output/<slug>/<slug>.tmp.musicxml
-.venv/bin/python scripts/clean_musicxml.py \
-  output/<slug>/<slug>.musicxml -o output/<slug>/<slug>.musicxml --source generated
-MSCORE="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
-"$MSCORE" output/<slug>/<slug>.musicxml -o output/<slug>/<slug>.mscz
-.venv/bin/python scripts/finish_score.py output/<slug>/<slug>.mscz   # pedal from harmony, not CC64; also strips forced beam breaks/layout breaks/instrument labels so MuseScore auto-beams and auto-lays-out
-#   (add --midi output/<slug>/<slug>.cleaned.mid --beats output/<slug>/beats.json to also
-#    write the schedule into the cleaned MIDI as CC64 when the transcriber under-detected pedal)
-"$MSCORE" output/<slug>/<slug>.mscz -o output/<slug>/<slug>.musicxml        # regenerate so all formats agree
-"$MSCORE" output/<slug>/<slug>.mscz -o output/<slug>/<slug>.pdf
+  output/<slug>/<slug>.mid output/<slug>/<slug>.cleaned.mid --time-sig <ts> --key '<key>' --tempo <bpm>
+
+D=$(mktemp -d)
+scripts/duet.sh output/<slug>/<slug>.cleaned.mid -o "$D" --device cpu
+mv "$D"/* output/<slug>/
+mv output/<slug>/score.musicxml output/<slug>/<slug>.musicxml
+rm -rf "$D"
+
+.venv/bin/python scripts/set_score_metadata.py \
+  output/<slug>/<slug>.musicxml output/<slug>/<slug>.musicxml \
+  --title '<title>' --composer '<composer>'
+scripts/mscore.sh output/<slug>/<slug>.musicxml -o output/<slug>/<slug>.mscz
+.venv/bin/python scripts/apply_harmony_pedal.py output/<slug>/<slug>.mscz   # pedal from harmony, not CC64
+scripts/mscore.sh output/<slug>/<slug>.mscz -o output/<slug>/<slug>.musicxml        # regenerate so all formats agree
+scripts/mscore.sh output/<slug>/<slug>.mscz -o output/<slug>/<slug>.pdf
 ```
 
-Once those choices (key/time-sig/beats file/metadata/anacrusis) are settled, write `output/<slug>/piece.json` (a small manifest — slug, key, time_sig, beats, beats_shift, title/composer/performer/arranger, anacrusis, dynamics_from_cleaned_midi, quantize_flags, post_flags) and use `scripts/rebuild_score.py output/<slug>/` for every re-delivery afterwards: it re-runs quantize → post → clean_musicxml → `edits.py` (if present) → mscore → `finish_score.py` → export `.musicxml`/`.pdf` → `verify` in one command, saving stage reports under `output/<slug>/reports/`, instead of hand-typing the chain again. The `.mscz` is a build product of `.cleaned.mid` + `beats.json` + `piece.json` + `edits.py` — never hand-edit it; change a source and rerun `rebuild_score.py`. (Also never feed an mscore-exported `.musicxml` back into mscore — its layout freezes as `LayoutBreak`s and breaks pagination; surgical edits belong in `output/<slug>/edits.py`, re-run through `rebuild_score.py`.)
-
-`transcription_cleanup.py` also provides `analyze` (read-only JSON report: key/meter/tempo estimates, artifact candidates, rubato, fast runs), `beats` (beat tracking seeded with a known BPM — librosa on the recording, or `--from-midi` to DP-track the transcription's own onsets, which follows deep ritardandi the audio tracker cannot, or `--refine` to lock a fixed grid to the hinted tempo and smoothly refine it to the onsets — best for steady syncopated grooves that mislead both trackers), `verify` (render + per-bar chroma comparison against the recording), `consensus` (cross-check against pitch-shifted re-transcriptions), and `clean`/`post` (the cleanup-score machinery).
-
-On request, `scripts/simplify_score.py` (run between `post` and `clean_musicxml.py`) turns a faithful-but-unplayable engraving (Synthesia-style full stacks re-struck on every 16th) into a playable edition: off-beat re-strikes under the per-bar pedal thin to a melody/bass skeleton, left-hand stacks the right hand already voices reduce to bass + octave/fifth, and chords wider than an octave drop pitch-class-doubled notes or octave-fold inward — harmony (pitch-class content), melody, bass roots, and rhythm are preserved. This is an arrangement edit, so it is not part of the default pipeline; the cleaned MIDI remains the faithful capture.
-
-`scripts/grid_surgery.py` (`diagnose` / `repair`) and `scripts/score_query.py` (`map` / `bar` / `family` / `sweep` / `layout`) back the `grid-surgery` skill: diagnosing and fixing beat-grid failures the bake-off flags, and running compact, both-staves score queries for any "bar N sounds wrong" report against a delivered piece.
+`transcription_cleanup.py` also provides `analyze` (read-only JSON report: key/meter/tempo estimates, artifact candidates, fast runs), `verify` (render + per-bar chroma comparison against the recording), and `consensus` (cross-check against pitch-shifted re-transcriptions). The MIDI → MusicXML stage itself is DuET, not this script.
 
 ## Limitations: the score is a foundation
 
@@ -125,21 +119,21 @@ On request, `scripts/simplify_score.py` (run between `post` and `clean_musicxml.
 MIDI-to-notation is an open research problem and a fundamentally lossy projection
 (see [docs/WHY_MIDI_TO_SCORE_IS_HARD.md](docs/WHY_MIDI_TO_SCORE_IS_HARD.md)) — even
 state-of-the-art systems produce scores their own authors call "far from
-satisfactory." This pipeline does the mechanical 80%: a correct-meter, correct-key,
-readably-quantized, pedalled, two-staff score with dynamics and metadata. It does
-**not** produce a finished edition. Expect to fix, by hand in MuseScore:
+satisfactory." DuET does the mechanical 80%: a correct-key, readably-engraved,
+pedalled, two-staff score with metadata. It does **not** produce a finished edition.
+Expect to fix, by hand in MuseScore:
 
-- **Wrong and missing notes.** The transcriber mishears notes, especially in dense
-  or fast passages; the pipeline cannot see what it cannot hear. `CLEANUP_NOTES.md`
-  lists the bars whose audio least matches the score (your first listening pass),
-  but pitch errors elsewhere remain possible.
-- **Rhythm and barlines** under rubato — the grid is a best fit, not ground truth;
-  some figures want re-grouping, and barlines may drift against the performance.
-- **Voicing, articulation, ornaments, and the fine layout** — voice splitting,
-  staccato/slur/accent marks, trills written out as fast runs, and beaming are
-  approximate or absent.
-- **Pedaling and dynamics** are derived (harmony for pedal, MIDI velocity for
-  dynamics) and are sensible defaults to refine, not interpretive decisions.
+- **Wrong and missing notes.** The transcriber and the engraving model mishear notes,
+  especially in dense or fast passages; the pipeline cannot see what it cannot hear.
+  `CLEANUP_NOTES.md` lists the bars whose audio least matches the score (your first
+  listening pass), but pitch errors elsewhere remain possible.
+- **Rhythm and barlines** under rubato — DuET infers the meter and bar structure from
+  the model; some figures want re-grouping, and barlines may drift against the performance.
+- **Voicing, articulation, and ornaments** — hand/staff assignment, trills written out
+  as fast runs (often engraved as grace notes or glissandi), and beaming are approximate.
+- **Dynamics are absent** — DuET writes none; add them by hand from the recording.
+  **Pedaling** is harmony-derived (one pedal per bar, re-pedalled at harmony changes)
+  and is a sensible default to refine, not an interpretive decision.
 
 The companion **cleaned MIDI** is the faithful capture — if you want it to *sound*
 like the performance, use the MIDI; the score is *instructions to a future
@@ -149,15 +143,16 @@ was decided automatically and the prioritized list of what to verify by ear.
 ## Other notes
 
 - Transkun is trained on **solo piano**. Recordings with other instruments, vocals, or heavy room noise will transcribe poorly.
-- The MIDI Transkun produces has **performance timing** (exactly as played, unquantized). Quantization is deliberate and conservative — a fixed BPM grid for steady performances, a beat-tracked grid (librosa, seeded with the piece's known BPM, refined to MIDI onsets) when there's rubato, with downbeat/pickup inference from bass/harmony/agogic cues. The grid is chosen by measurement, not by ear: candidate grids (fixed/refined vs. onset-DP `--from-midi`) are compared on the fraction of MIDI onsets landing on grid slots, and the winner is used — a grid that "sounds right" but fits at ~0.7 engraves straight eighths as dotted-rhythm confetti, while an onset-tracked grid at ≥0.95 also follows genuine tempo flux like a closing ritardando. The fit check is windowed, not just global (`weak_windows` / `level_hop_suspects` in the beats report): continuous 16th textures make the metrical level and phase onset-ambiguous — every sub-multiple grid fits perfectly — so a tracker can hop to the dotted-eighth layer for one section while the global fit still looks like a winner; flagged spans are rebuilt by continuity with the neighboring sections. Then: each beat picks its own subdivision (genuine triplets become real tuplets; swing is detected and notated straight with a Swing direction), hands are assigned by a cost model that handles crossings, the bass staff switches to treble clef for sustained high passages, and durations are pedal-aware: under a sustained pedal a note rings to the next onset up to one bar (a once-per-bar bass note becomes a whole note, not a clipped note + rests), since a rest under pedal is acoustically impossible — while gaps longer than a bar stay short to avoid multi-bar drones (`--pedal-sustain beat` keeps stabs short for grooves; `--pedal-sustain always` applies the pedal rule everywhere when Transkun under-detected CC64 but the score gets per-bar harmony pedaling; `--no-legato-fill` keeps performed lengths for articulation-faithful engraving). Repeated bars keep each other honest: when the same figure recurs and one instance was played with an agogic rush/drag, quantize de-shifts it per beat-group toward the group's cleanest instance before snapping (evidence-gated so genuine variation is flagged, never rewritten; `--no-repeat-align` disables), and `verify` flags rhythm-divergent repeat pairs it declined to fix. Pieces with several tempi or keys are handled: sustained tempo plateaus become metronome-mark changes, persistent modulations become real key-signature changes (guarded against windowed-key flip-flop: only regions that actually leave the incumbent pitch collection count as modulations), and `clean --tempo-map` writes a beat-aligned MIDI tempo map so DAW bar grids follow the performance. Generated scores carry title/composer/arranger/performer metadata in the document header. The `cleanup-score` skill handles the data-decidable part; what remains for a human ear is verifying pitches against the recording, the downbeat/pickup anchor, rubato barlines, tuplet decisions, ornaments, and dynamics/phrasing — listed per piece in `CLEANUP_NOTES.md`.
-- Transcription runs on CPU by default; expect a few minutes per piece.
-- **The engraved score will feel less expressive than the cleaned MIDI, and that is partly unavoidable.** A score is a lossy, discrete re-interpretation of a performance; quantization and note-value rounding necessarily delete the micro-timing, true durations, and continuous dynamics that make the MIDI sound alive. See [docs/WHY_MIDI_TO_SCORE_IS_HARD.md](docs/WHY_MIDI_TO_SCORE_IS_HARD.md) for the research literature on why this conversion is uniquely hard, which of our failures are irreducible vs. fixable, and the concrete roadmap for the fixable ones.
+- The MIDI Transkun produces has **performance timing** (exactly as played, unquantized). DuET engraves it into notation: it infers the key signature, meter, and tempo from the model, spells notes against the key, assigns hands and staff, turns fast runs into grace notes, and writes glissandi as glissando lines. It copies every input note into the score, so the artifact-removal clean pass is what keeps Transkun ghosts and duplicates out of the engraving. Generated scores carry title/composer/arranger/performer metadata in the document header (set by `scripts/set_score_metadata.py`). The `cleanup-score` skill handles the data-decidable part; what remains for a human ear is verifying pitches against the recording, the downbeat/pickup anchor, rubato barlines, ornaments, and dynamics/phrasing — listed per piece in `CLEANUP_NOTES.md`.
+- Transcription (Transkun) and engraving (DuET) each run on CPU by default; expect a few minutes per piece.
+- **The engraved score will feel less expressive than the cleaned MIDI, and that is partly unavoidable.** A score is a lossy, discrete re-interpretation of a performance; engraving necessarily deletes the micro-timing, true durations, and continuous dynamics that make the MIDI sound alive. See [docs/WHY_MIDI_TO_SCORE_IS_HARD.md](docs/WHY_MIDI_TO_SCORE_IS_HARD.md) for the research literature on why this conversion is uniquely hard, which of our failures are irreducible vs. fixable, and the concrete roadmap for the fixable ones.
 - Only transcribe recordings for personal study/use, and respect the rights of performers and composers.
 
 ## References
 
 - [Why MIDI-to-score is hard](docs/WHY_MIDI_TO_SCORE_IS_HARD.md) — cited survey of the performance-to-score literature + this pipeline's roadmap
 
+- DuET: https://github.com/wei-zeng98/DuET (MIDI → score engraving model)
 - Transkun: https://github.com/Yujia-Yan/Transkun
 - yt-dlp: https://github.com/yt-dlp/yt-dlp
 - MuseScore CLI: https://handbook.musescore.org/appendix/command-line-usage

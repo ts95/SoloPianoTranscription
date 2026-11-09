@@ -12,6 +12,7 @@ from fractions import Fraction
 import random
 import string
 import os
+import tempfile
 import zipfile
 import shutil
 import sys
@@ -354,7 +355,7 @@ def repackage_mscz(mscz_path, extract_dir):
 # ---------------------------------------------------------------------------
 
 def add_pedals(mscz_path, get_pedals_fn, staff_id='2',
-               extract_dir='/tmp/mscz_pedal_extract',
+               extract_dir=None,
                post_process=None):
     """Full workflow: extract → backup → parse → add pedals → repackage.
 
@@ -369,6 +370,8 @@ def add_pedals(mscz_path, get_pedals_fn, staff_id='2',
                       before indent/write.
     """
     # Extract
+    if extract_dir is None:
+        extract_dir = os.path.join(tempfile.gettempdir(), 'mscz_pedal_extract')
     print(f"Extracting {mscz_path}...")
     mscx_path = extract_mscz(mscz_path, extract_dir)
 
@@ -604,11 +607,6 @@ def extract_measure_data(mscx_path, staff_ids=('1', '2')):
                         current_sig_d = int(sd.text)
 
         ticks = get_time_sig_ticks(current_sig_n, current_sig_d)
-        if meas.get('len'):
-            # irregular measure (e.g. an anacrusis): len is a fraction of a
-            # whole note and overrides the time signature's nominal length
-            ln, ld = (int(x) for x in meas.get('len').split('/'))
-            ticks = int(1920 * ln / ld)
         measure_info.append({
             'number': i + 1,
             'time_sig': f'{current_sig_n}/{current_sig_d}',

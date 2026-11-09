@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python *)",
+      "Bash(.venv/bin/yt-dlp *)",
+      "Bash(.venv/bin/transkun *)",
+      "Bash(.venv/bin/pip *)",
+      "Bash(scripts/prepare_audio.sh *)",
+      "Bash(scripts/mscore.sh *)",
+      "Bash(scripts/duet.sh *)",
+      "Bash(/opt/homebrew/bin/ffmpeg *)",
+      "Bash(git *)",
+      "Bash(grep *)",
+      "Bash(ls *)"
+    ]
+  }
+}
