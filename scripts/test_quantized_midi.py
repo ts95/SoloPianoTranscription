@@ -24,6 +24,16 @@ def test_unmatched_note_is_filled_from_its_neighbours():
     print("ok: a hand-added note takes the average of the matched notes around it")
 
 
+def test_a_shortened_pickup_bar_does_not_break_the_match():
+    # DuET placed everything one quarter later than the hand-fixed score (pickup cut by a beat)
+    perf = [(1.0 + i, 60 + i % 3, 30 + 10 * i) for i in range(8)]
+    score = [(float(i), 60 + i % 3) for i in range(8)]
+    vel, matched = assign_velocities(score, perf)
+    assert matched == 8 and vel == [30 + 10 * i for i in range(8)], (vel, matched)
+    print("ok: a constant shift from an edited pickup bar is absorbed")
+
+
 if __name__ == "__main__":
+    test_a_shortened_pickup_bar_does_not_break_the_match()
     test_each_score_note_takes_its_own_performed_velocity()
     test_unmatched_note_is_filled_from_its_neighbours()

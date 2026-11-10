@@ -63,6 +63,17 @@ Every delivered score must identify the piece in its header. DuET only wrote a f
 
 `--title` and `--composer` always (original composer for classical, original artist for pop/game covers); `--arranger` when the arrangement has a known author (cover channel / arranger credit from the video title or description); `--performer` when the pianist is known. Omit roles that don't apply. This edits only the `<work>`/`<identification>` header — the engraved content is left byte-for-byte intact.
 
+## 3b. Fill the rests that follow a note (rule)
+
+The user does not want rests after a note inside a bar — the pedal sustains the note anyway. Always run:
+
+```bash
+.venv/bin/python scripts/fill_rests.py \
+  'output/<slug>/<slug>.musicxml' 'output/<slug>/<slug>.musicxml'
+```
+
+Each note (or chord) is lengthened to the next note of its voice or the bar end; a rest that opens a bar stays. To re-apply after the user has hand-edited the `.mscz`: export it to MusicXML with `scripts/mscore.sh`, run this on the export, and convert back.
+
 ## 4. Convert to .mscz + .pdf with MuseScore (format conversion only)
 
 ```bash

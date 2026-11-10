@@ -111,6 +111,8 @@ rm -rf "$(dirname "$D")"
 .venv/bin/python scripts/set_score_metadata.py \
   output/<slug>/<slug>.musicxml output/<slug>/<slug>.musicxml \
   --title '<title>' --composer '<composer>'
+.venv/bin/python scripts/fill_rests.py \
+  output/<slug>/<slug>.musicxml output/<slug>/<slug>.musicxml   # lengthen notes over the rests that follow them
 scripts/mscore.sh output/<slug>/<slug>.musicxml -o output/<slug>/<slug>.mscz
 .venv/bin/python scripts/apply_harmony_pedal.py output/<slug>/<slug>.mscz   # pedal from harmony, not CC64
 scripts/mscore.sh output/<slug>/<slug>.mscz -o output/<slug>/<slug>.musicxml        # regenerate so all formats agree

@@ -21,6 +21,7 @@ Only note-on velocities change — tempo, timing, tracks and pedal are the
 score export's own.
 """
 import argparse
+import collections
 import json
 import statistics
 import sys
@@ -33,9 +34,21 @@ MAX_DISTANCE = 2.0   # quarters: how far a hand-moved note may sit from DuET's p
 NEIGHBOURHOOD = 2.0  # quarters: unmatched notes average the matched notes this close
 
 
+def pickup_offset(score, perf):
+    """Constant shift (quarters) between DuET's positions and the score's — non-zero
+    when the pickup bar was shortened or lengthened by hand. The most common
+    same-pitch position difference, to the nearest sixteenth."""
+    diffs = collections.Counter(round((pq - sq) * 4) / 4
+                                for sq, sp in score for pq, pp, _ in perf
+                                if sp == pp and abs(pq - sq) <= 8)
+    return diffs.most_common(1)[0][0] if diffs else 0.0
+
+
 def assign_velocities(score, perf):
     """score: [(quarter, pitch)], perf: [(quarter, pitch, velocity)].
     Returns (velocities aligned with `score`, number matched to a performed note)."""
+    shift = pickup_offset(score, perf)
+    perf = [(pq - shift, pp, v) for pq, pp, v in perf]
     pairs = sorted((abs(sq - pq), si, pi)
                    for si, (sq, sp) in enumerate(score)
                    for pi, (pq, pp, _) in enumerate(perf)
