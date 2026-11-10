@@ -35,7 +35,7 @@ import numpy as np
 import pretty_midi
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from musicxml_io import load, save  # noqa: E402
+from musicxml_io import let_musescore_reflow, load, save  # noqa: E402
 
 LEVELS = ["pp", "p", "mp", "mf", "f", "ff"]
 MIN_RUN = 2            # bars a level must hold to get its own mark
@@ -189,6 +189,7 @@ def main():
                  "bars were added or removed; dynamics cannot be placed")
     marks, hairpins = plan_dynamics(values, levels)
     removed = write_dynamics(root, marks, hairpins)
+    let_musescore_reflow(root)   # new marks change the spacing: old breaks would strand systems
     save(args.output, prolog, root)
     number = [m.get("number") for m in measures]   # printed bar numbers
     print(json.dumps({

@@ -33,7 +33,14 @@ def let_musescore_rebeam(root):
     for encoding in root.iter("encoding"):
         for supports in encoding.findall("supports"):
             encoding.remove(supports)
+    let_musescore_reflow(root)
+    return beams
+
+
+def let_musescore_reflow(root):
+    """Drop the system and page breaks a MuseScore export carries. They describe the
+    layout the score had BEFORE this edit; kept, they pin the old page turns in place
+    and leave half-empty pages once anything changes the spacing."""
     for pr in root.iter("print"):
         pr.attrib.pop("new-system", None)
         pr.attrib.pop("new-page", None)
-    return beams
