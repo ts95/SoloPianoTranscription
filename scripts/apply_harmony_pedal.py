@@ -33,7 +33,8 @@ def main():
         print(f"ERROR: not found: {args.mscz}", file=sys.stderr)
         sys.exit(1)
 
-    mscx = extract_mscz(args.mscz, os.path.join(tempfile.gettempdir(), "harmony_pedal_analyze"))
+    td = tempfile.TemporaryDirectory()  # private: concurrent runs must not share an extract dir
+    mscx = extract_mscz(args.mscz, os.path.join(td.name, "analyze"))
     measures = extract_measure_data(mscx, staff_ids=("1", "2"))
     results = [analyze_measure(m) for m in measures]
     splits = {r["number"] for r in results if r["recommendation"] == "split"}
@@ -46,7 +47,8 @@ def main():
         split_measures=splits,
         time_sig_fn=lambda m: sigs.get(m, "4/4"))
 
-    add_pedals(args.mscz, cfg, staff_id=args.staff)
+    add_pedals(args.mscz, cfg, staff_id=args.staff, extract_dir=os.path.join(td.name, "write"))
+    td.cleanup()
 
     if not args.keep_backup:
         bak = args.mscz + ".bak"

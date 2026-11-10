@@ -104,7 +104,7 @@ def analyze_measure(mdata):
             if ev['type'] != 'Chord':
                 continue
             tick = ev['tick']
-            lowest_pc = min(ev['pcs']) if ev['pcs'] else None
+            lowest_pc = min(ev['pitches']) % 12 if ev['pitches'] else None
 
             if tick == 0 or (start_pc is None and tick < half_tick):
                 start_pc = lowest_pc
@@ -135,7 +135,7 @@ def analyze_measure(mdata):
         for ev in bass_events:
             if ev['type'] != 'Chord':
                 continue
-            if ev['dur'] >= 960 and min(ev['pitches']) < 48:
+            if ev['pitches'] and ev['dur'] >= 960 and min(ev['pitches']) < 48:
                 result['flags'].append('sustained_bass')
                 break
 
