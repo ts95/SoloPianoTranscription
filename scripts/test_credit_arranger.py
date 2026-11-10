@@ -1,4 +1,4 @@
-"""Regression test: the arranger is printed under the composer.
+"""Regression test: the arranger is printed at the left of the title frame.
 
 Run: .venv/bin/python scripts/test_credit_arranger.py
 """
@@ -14,11 +14,20 @@ def score(arranger):
 
 def test_arranger_is_added_once():
     new, status = with_arranger(score("RoLee Piano"))
-    assert status == "added" and "<text>Bring Me The Horizon\nArr. RoLee Piano</text>" in new
-    assert "<text>Strangers</text>" in new
+    assert status == "added" and new.count("<Text>") == 3
+    assert "<style>lyricist</style>" in new and "<text>Arr. RoLee Piano</text>" in new
+    assert "<align>left,bottom</align>" in new   # level with the composer, not up beside the title
+    assert "<text>Bring Me The Horizon</text>" in new and "<text>Strangers</text>" in new
     again, status = with_arranger(new)
     assert status == "already shown" and again == new
-    print("ok: the arranger becomes a second line of the composer text, once")
+    print("ok: the arranger becomes its own left-hand text in the title frame, once")
+
+
+def test_old_second_line_is_moved_to_the_left():
+    old = score("RoLee Piano").replace("<text>Bring Me The Horizon</text>", "<text>Bring Me The Horizon\nArr. RoLee Piano</text>")
+    new, status = with_arranger(old)
+    assert status == "added" and "<text>Bring Me The Horizon</text>" in new and new.count("Arr. RoLee Piano") == 1
+    print("ok: a credit written under the composer by the old version is moved to the left")
 
 
 def test_nothing_to_do():
@@ -30,4 +39,5 @@ def test_nothing_to_do():
 
 if __name__ == "__main__":
     test_arranger_is_added_once()
+    test_old_second_line_is_moved_to_the_left()
     test_nothing_to_do()

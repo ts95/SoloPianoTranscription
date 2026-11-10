@@ -69,6 +69,15 @@ for attempt in 1 2 3; do
     rm -f "$clean"
     exit 0
   fi
+  # image exports (png/svg) write one file per page: <name>-1.png, <name>-2.png, ...
+  pages=("${tmp%.*}"-[0-9]*."${tmp##*.}")
+  if [ -s "${pages[0]}" ]; then
+    for page in "${pages[@]}"; do
+      mv -f "$page" "${out%.*}${page#"${tmp%.*}"}"
+    done
+    rm -f "$clean"
+    exit 0
+  fi
 done
 rm -f "$tmp" "$clean"
 [ "$code" -ne 0 ] || code=1

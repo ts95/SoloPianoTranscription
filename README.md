@@ -121,7 +121,7 @@ rm -rf "$(dirname "$D")"
 .venv/bin/python scripts/annotate_dynamics.py output/<slug>/<slug>.musicxml output/<slug>/<slug>.cleaned.mid \
   output/<slug>/score.npz output/<slug>/<slug>.musicxml --range p-f   # dynamics + hairpins from the velocities
 scripts/mscore.sh output/<slug>/<slug>.musicxml -o output/<slug>/<slug>.mscz   # also applies the house layout (scripts/score_style.mss)
-.venv/bin/python scripts/credit_arranger.py output/<slug>/<slug>.mscz              # print the arranger under the composer
+.venv/bin/python scripts/credit_arranger.py output/<slug>/<slug>.mscz              # print the arranger at the left of the title frame
 .venv/bin/python scripts/apply_harmony_pedal.py output/<slug>/<slug>.mscz   # pedal from harmony, not CC64
 scripts/mscore.sh output/<slug>/<slug>.mscz -o output/<slug>/<slug>.musicxml        # regenerate so all formats agree
 scripts/mscore.sh output/<slug>/<slug>.mscz -o output/<slug>/<slug>.pdf

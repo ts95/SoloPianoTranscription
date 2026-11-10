@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Print the arranger on the score, under the composer.
+"""Print the arranger on the score, at the left of the title frame.
 
 set_score_metadata.py records the arranger in the file's metadata, but MuseScore
-only prints the title and the composer on the page. This adds a second line to
-the composer text of the title frame, read from the score's own arranger tag:
+only prints the title and the composer on the page. This adds a text at the left
+of the title frame, level with the composer on the right, read from the score's
+own arranger tag:
 
-    Bring Me The Horizon
-    Arr. RoLee Piano
+    Arr. RoLee Piano                                   Bring Me The Horizon
 
     credit_arranger.py <file.mscz>
 
@@ -21,10 +21,10 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from musescore_pedal_lib import extract_mscz, repackage_mscz  # noqa: E402
+from musescore_pedal_lib import extract_mscz, generate_eid, repackage_mscz  # noqa: E402
 
 ARRANGER_TAG = re.compile(r'<metaTag name="arranger">([^<]*)</metaTag>')
-COMPOSER_TEXT = re.compile(r'(<style>composer</style>\s*<text>)(.*?)(</text>)', flags=re.S)
+COMPOSER = re.compile(r'<Text>(?:(?!</Text>).)*?<style>composer</style>(?:(?!</Text>).)*?</Text>', flags=re.S)
 
 
 def with_arranger(mscx):
@@ -33,13 +33,23 @@ def with_arranger(mscx):
     arranger = tag.group(1).strip() if tag else ""
     if not arranger:
         return mscx, "no arranger in the score's metadata"
-    text = COMPOSER_TEXT.search(mscx)
-    if not text:
+    credit = f"Arr. {arranger}"
+    composer = COMPOSER.search(mscx)
+    if not composer:
         return mscx, "no composer text in the title frame"
-    if arranger in text.group(2):
-        return mscx, "already shown"
-    line = f"{text.group(2)}\nArr. {arranger}"
-    return mscx[:text.start(2)] + line + mscx[text.end(2):], "added"
+    # an earlier version of this script put the credit on a second composer line
+    block = composer.group(0).replace(f"\n{credit}</text>", "</text>")
+    if f"<text>{credit}</text>" in mscx:
+        status = "already shown"
+    else:
+        # MuseScore's "lyricist" text style sits at the LEFT of the title frame. The
+        # explicit bottom alignment puts it level with the composer on the right;
+        # without it MuseScore places the text at the top, beside the title.
+        block += (f"\n        <Text>\n          <eid>{generate_eid()}</eid>\n          <style>lyricist</style>"
+                  f"\n          <align>left,bottom</align>"
+                  f"\n          <text>{credit}</text>\n          </Text>")
+        status = "added"
+    return mscx[:composer.start()] + block + mscx[composer.end():], status
 
 
 def main():
@@ -52,7 +62,7 @@ def main():
         with open(path, encoding="utf-8") as f:
             mscx = f.read()
         new, status = with_arranger(mscx)
-        if status == "added":
+        if new != mscx:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(new)
             repackage_mscz(args.mscz, os.path.join(td, "x"))

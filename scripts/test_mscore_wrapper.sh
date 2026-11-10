@@ -52,3 +52,9 @@ MSCORE="$T/rec" scripts/mscore.sh -S mine.mss "$T/in.musicxml" -o "$T/f.mscz"
 MSCORE="$T/rec" scripts/mscore.sh "$T/e.mscz" -o "$T/g.pdf"
 ! grep -q -- "-S" "$T/args" || { echo "FAIL: style added to a non-import conversion"; exit 1; }
 echo "ok: an explicit -S is respected, and exports are untouched"
+
+# 7. image exports write one file per page: they are moved to <out>-N.<ext>
+fake pager "$out_arg"'; printf a > "${out%.*}-1.png"; printf b > "${out%.*}-2.png"; exit 0'
+MSCORE="$T/pager" scripts/mscore.sh "$T/e.mscz" -o "$T/img.png"; code=$?
+[ "$code" -eq 0 ] && [ "$(cat "$T/img-1.png")$(cat "$T/img-2.png")" = "ab" ] && [ -z "$(ls "$T" | grep mscore-tmp)" ] || { echo "FAIL: per-page image export (code $code): $(ls "$T")"; exit 1; }
+echo "ok: a per-page image export lands as <out>-1.png, <out>-2.png"
