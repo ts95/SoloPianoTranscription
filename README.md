@@ -117,7 +117,7 @@ scripts/mscore.sh output/<slug>/<slug>.mscz -o output/<slug>/<slug>.musicxml    
 scripts/mscore.sh output/<slug>/<slug>.mscz -o output/<slug>/<slug>.pdf
 ```
 
-`transcription_cleanup.py` also provides `analyze` (read-only JSON report: key/meter/tempo estimates, artifact candidates, fast runs), `verify` (render + per-bar chroma comparison against the recording), and `consensus` (cross-check against pitch-shifted re-transcriptions). The MIDI → MusicXML stage itself is DuET, not this script. `scripts/split_hands_midi.py <cleaned.mid> <score.npz> <out.mid> [--hand bass|treble]` writes a one-hand MIDI (the performance with the other hand muted) from DuET's staff assignment.
+`transcription_cleanup.py` also provides `analyze` (read-only JSON report: key/meter/tempo estimates, artifact candidates, fast runs), `verify` (render + per-bar chroma comparison against the recording), and `consensus` (cross-check against pitch-shifted re-transcriptions). The MIDI → MusicXML stage itself is DuET, not this script. `scripts/split_hands_midi.py <cleaned.mid> <score.npz> <out.mid> [--hand bass|treble]` writes a one-hand MIDI (the performance with the other hand muted) from DuET's staff assignment. `scripts/quantized_midi.py <score.mid> <cleaned.mid> <score.npz> <out.mid>` gives a MIDI exported from your finished `.mscz` the velocities of the original performance — the score's exact rhythm with the recording's phrasing.
 
 ## Limitations: the score is a foundation
 
