@@ -34,3 +34,21 @@ fake echoer 'echo "$@"; exit 7'
 got=$(MSCORE="$T/echoer" scripts/mscore.sh --version "a b"); code=$?
 [ "$code" -eq 7 ] && [ "$got" = "--version a b" ] || { echo "FAIL: pass-through (code $code, got '$got')"; exit 1; }
 echo "ok: without -o the call passes straight through"
+
+# 5. .musicxml -> .mscz: stale breaks are stripped from what MuseScore reads, the house
+#    style is applied, and the source file is left alone
+fake rec 'echo "$@" > "'"$T"'/args"; for a in "$@"; do case "$a" in *.musicxml) cp "$a" "'"$T"'/seen";; esac; done; '"$out_arg"'; printf x > "$out"; exit 0'
+printf '<measure><print new-system="yes"/></measure><measure><print new-page="yes" x="1"/></measure>' > "$T/in.musicxml"
+cp "$T/in.musicxml" "$T/in.orig"
+MSCORE="$T/rec" scripts/mscore.sh "$T/in.musicxml" -o "$T/e.mscz"; code=$?
+[ "$code" -eq 0 ] && grep -q -- "-S .*score_style.mss" "$T/args" || { echo "FAIL: house style not applied ($(cat "$T/args"))"; exit 1; }
+! grep -q "new-system\|new-page" "$T/seen" && grep -q 'x="1"' "$T/seen" || { echo "FAIL: breaks not stripped: $(cat "$T/seen")"; exit 1; }
+cmp -s "$T/in.musicxml" "$T/in.orig" || { echo "FAIL: source MusicXML was modified"; exit 1; }
+echo "ok: importing MusicXML ignores its old breaks and applies the house style"
+
+# 6. an explicit -S wins; other conversions get no style
+MSCORE="$T/rec" scripts/mscore.sh -S mine.mss "$T/in.musicxml" -o "$T/f.mscz"
+[ "$(grep -o -- "-S" "$T/args" | wc -l | tr -d ' ')" = "1" ] && grep -q "mine.mss" "$T/args" || { echo "FAIL: explicit -S not respected ($(cat "$T/args"))"; exit 1; }
+MSCORE="$T/rec" scripts/mscore.sh "$T/e.mscz" -o "$T/g.pdf"
+! grep -q -- "-S" "$T/args" || { echo "FAIL: style added to a non-import conversion"; exit 1; }
+echo "ok: an explicit -S is respected, and exports are untouched"

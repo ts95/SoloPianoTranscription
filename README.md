@@ -120,7 +120,7 @@ rm -rf "$(dirname "$D")"
   output/<slug>/<slug>.musicxml output/<slug>/<slug>.musicxml   # lengthen notes over the rests that follow them
 .venv/bin/python scripts/annotate_dynamics.py output/<slug>/<slug>.musicxml output/<slug>/<slug>.cleaned.mid \
   output/<slug>/score.npz output/<slug>/<slug>.musicxml --range p-f   # dynamics + hairpins from the velocities
-scripts/mscore.sh output/<slug>/<slug>.musicxml -o output/<slug>/<slug>.mscz
+scripts/mscore.sh output/<slug>/<slug>.musicxml -o output/<slug>/<slug>.mscz   # also applies the house layout (scripts/score_style.mss)
 .venv/bin/python scripts/apply_harmony_pedal.py output/<slug>/<slug>.mscz   # pedal from harmony, not CC64
 scripts/mscore.sh output/<slug>/<slug>.mscz -o output/<slug>/<slug>.musicxml        # regenerate so all formats agree
 scripts/mscore.sh output/<slug>/<slug>.mscz -o output/<slug>/<slug>.pdf

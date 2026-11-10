@@ -103,7 +103,7 @@ scripts/mscore.sh 'output/<slug>/<slug>.musicxml' -o 'output/<slug>/<slug>.mscz'
 scripts/mscore.sh 'output/<slug>/<slug>.mscz' -o 'output/<slug>/<slug>.pdf'
 ```
 
-- `scripts/mscore.sh` retries up to 3 times and judges by the output file (MuseScore's exit-134 shutdown crash after a good write counts as success). A non-zero exit from the wrapper is a real failure — look at MuseScore's log in `~/Library/Application Support/MuseScore/MuseScore4/logs/`.
+- `scripts/mscore.sh` retries up to 3 times and judges by the output file (MuseScore's exit-134 shutdown crash after a good write counts as success). On a `.musicxml` → `.mscz` conversion it also ignores the MusicXML's recorded system/page breaks and applies the house layout `scripts/score_style.mss` (constant gap between systems, rows gravitating to the top of the page) — so the page layout is always fresh; check the PDF's last page is not nearly empty anyway. A non-zero exit from the wrapper is a real failure — look at MuseScore's log in `~/Library/Application Support/MuseScore/MuseScore4/logs/`.
 
 ## 5. Harmony pedaling
 

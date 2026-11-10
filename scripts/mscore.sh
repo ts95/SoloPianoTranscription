@@ -13,6 +13,13 @@
 #    attempt produced a file, <out> is left untouched and the wrapper exits
 #    non-zero.
 #
+# 3. House layout for every new score. When a .musicxml is converted to a .mscz:
+#    - system/page breaks in the MusicXML are ignored (a MuseScore export records
+#      the layout it had; re-importing them pins old page turns in place and
+#      strands near-empty pages once anything changes the spacing), and
+#    - scripts/score_style.mss is applied (a constant gap between systems, rows
+#      gravitating to the top of the page) unless the call passes its own -S.
+#
 # Without -o, arguments and exit code pass through unchanged.
 MSCORE_BIN="${MSCORE:-/Applications/MuseScore 4.app/Contents/MacOS/mscore}"
 
@@ -32,6 +39,26 @@ fi
 # same directory and extension as <out>: MuseScore picks the format by extension
 tmp="${out%.*}.mscore-tmp.$$.${out##*.}"
 args[out_index]="$tmp"
+
+clean=""
+if [[ "$out" == *.mscz ]]; then
+  has_style=0
+  in_index=""
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+      -S|--style) has_style=1 ;;
+      *.musicxml) [ "$i" -ne "$out_index" ] && in_index=$i ;;
+    esac
+  done
+  if [ -n "$in_index" ]; then
+    clean="${TMPDIR:-/tmp}/mscore-in.$$.musicxml"
+    sed -E 's/ new-(system|page)="yes"//g' "${args[in_index]}" > "$clean"
+    args[in_index]="$clean"
+    if [ "$has_style" -eq 0 ]; then
+      args=(-S "$(dirname "$0")/score_style.mss" "${args[@]}")
+    fi
+  fi
+fi
 code=1
 for attempt in 1 2 3; do
   rm -f "$tmp"
@@ -39,9 +66,10 @@ for attempt in 1 2 3; do
   code=$?
   if [ -s "$tmp" ]; then
     mv -f "$tmp" "$out"
+    rm -f "$clean"
     exit 0
   fi
 done
-rm -f "$tmp"
+rm -f "$tmp" "$clean"
 [ "$code" -ne 0 ] || code=1
 exit "$code"
