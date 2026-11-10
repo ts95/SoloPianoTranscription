@@ -12,11 +12,11 @@ YouTube serves lossy audio (opus/m4a). Decode it **once** to WAV — never re-en
 ```bash
 # 1. Best audio → WAV (one lossy generation: YouTube's own encode)
 .venv/bin/yt-dlp -x --audio-format wav --restrict-filenames \
-  -o 'output/%(title)s/%(title)s.%(ext)s' '<url>'
+  -o 'output/%(title)s/%(title)s.source.%(ext)s' '<url>'
 
 # 2. Loudness-normalize (linear gain — preserves dynamics/velocities) + 44.1 kHz
-scripts/prepare_audio.sh 'output/<slug>/<slug>.wav' 'output/<slug>/<slug>.prepared.wav'
-mv 'output/<slug>/<slug>.prepared.wav' 'output/<slug>/<slug>.wav'
+scripts/prepare_audio.sh 'output/<slug>/<slug>.source.wav' 'output/<slug>/<slug>.wav' \
+  && rm 'output/<slug>/<slug>.source.wav'
 
 # 3. Listening copy
 /opt/homebrew/bin/ffmpeg -i 'output/<slug>/<slug>.wav' -codec:a libmp3lame -q:a 0 \
@@ -24,7 +24,7 @@ mv 'output/<slug>/<slug>.prepared.wav' 'output/<slug>/<slug>.wav'
 ```
 
 - `--restrict-filenames` produces a safe ASCII slug from the video title; the slug names both the directory and the files for the rest of the pipeline.
-- `scripts/prepare_audio.sh` does two-pass EBU R128 loudnorm in **linear** mode (a single static gain — dynamic mode would compress the dynamics and skew the velocities Transkun emits) and resamples to the 44.1 kHz the model expects.
+- `scripts/prepare_audio.sh` measures EBU R128 loudness and true peak, then applies **one static gain** toward −16 LUFS, capped so the true peak stays ≤ −1.5 dBTP (a peaky recording ends quieter than −16 rather than being compressed — compression would skew the velocities Transkun emits), and resamples to the 44.1 kHz the model expects. The `&& rm` removes the unprepared download only on success: a leftover `.source.wav` means preparation did not finish.
 
 After it finishes, verify both files exist and are non-trivially sized (`ls -lh`), and report the paths. The `.wav` is the transcription input; the `.mp3` is for the user's ears.
 

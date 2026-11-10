@@ -1,6 +1,6 @@
 ---
 name: midi-to-musicxml
-description: Convert a MIDI file to a readable engraved MusicXML score and a native MuseScore 4 file (.mscz) using DuET (never MuseScore's MIDI import). Use for stage 3 of the transcription pipeline, or whenever the user wants a .mid as editable sheet music.
+description: Convert a MIDI file to a readable engraved MusicXML score and a native MuseScore 4 file (.mscz) using DuET (never MuseScore's MIDI import). Use for stages 4–6 of the transcription pipeline, or whenever the user wants a .mid as editable sheet music.
 ---
 
 # Convert MIDI to an engraved score (MusicXML + MuseScore .mscz) with DuET
@@ -9,7 +9,7 @@ Input: a path to a `.mid` file. In the pipeline this is the cleaned `output/<slu
 
 **Never feed a `.mid` to MuseScore.** Its import quantization auto-detects its own tempo (ignoring the tempo and time-signature meta events) and can lock onto a sub-pulse — wronging every barline and spraying fake tuplets. MIDI → MusicXML always goes through **DuET** (`scripts/duet.sh`); MuseScore is used **only** for the `.musicxml` → `.mscz`/`.pdf` format conversion.
 
-**DuET** is a learned model (note + frame dual encoding) that maps the performance MIDI to cleanly engraved notation. It infers its own key signatures, note spelling, hand/staff assignment, bar structure, meters, runs→grace notes, and glissandi. It does **not** write dynamics (add those by hand) and it sets only the title from the input filename (add the rest in step 2).
+**DuET** is a learned model (note + frame dual encoding) that maps the performance MIDI to cleanly engraved notation. It infers its own key signatures, note spelling, hand/staff assignment, bar structure, meters, runs→grace notes, and glissandi. It also writes block dynamics (a first draft the user refines by hand) and its own pedal marks (replaced by harmony pedaling in step 5). It sets only the title from the input filename (add the rest in step 3).
 
 **Re-run safe:** before running, check whether `<slug>.musicxml` already exists and is non-empty — if so, skip (unless the user asked to redo it).
 
@@ -29,24 +29,23 @@ rm -rf "$(dirname "$D")"
 - Outputs: `score.musicxml` (the engraved score → renamed to `<slug>.musicxml`), `score.mid` (listening MIDI, separate upper/lower-staff tracks), `review.json` (spots the engraving was unsure about — feed these to CLEANUP_NOTES), `report.json` (model identity, input cleanup, engraving version), `notes.json` / `score.npz` / `frames.csv` (raw predictions).
 - Engraving knobs (all on by default): `--no-auto-keys`, `--no-auto-spelling`, `--no-auto-runs`, `--no-auto-gliss`, and `--key-switch`/`--key-model-cost` for reproducible key decisions. Leave the defaults unless the user asks to change them.
 
-## 2. (Optional) Normalize meter/tempo to the ground truth
+## 2. (Optional) Normalize the tempo to the ground truth
 
-DuET infers the meter and per-section tempo from the model, and **has no override flag** — so if the web ground-truth meter/tempo is known and differs from what DuET engraved, force it. Common failure: a piece in one meter rendered with mixed meters (e.g. a 3/4 piece as 3/4↔4/4) and tempo changes. Check the engraved meter/tempo first:
+DuET infers a tempo per section — visible metronome marks plus hidden `<sound tempo>` playback changes — and **has no override flag**. If the web ground-truth tempo is known and differs from what DuET engraved, force it. Check the engraved meter/tempo first:
 
 ```bash
 grep -oE '<time><beats>[^<]*</beats><beat-type>[^<]*</beat-type>' 'output/<slug>/<slug>.musicxml' | sort | uniq -c
-grep -oE '<per-minute>[0-9]+' 'output/<slug>/<slug>.musicxml'
+grep -oE '<per-minute>[0-9]+|<sound tempo="[0-9]+' 'output/<slug>/<slug>.musicxml'
 ```
 
-If they disagree with the ground truth, run the normalizer (right after DuET, before metadata):
+If the tempo disagrees with the ground truth, run the normalizer (right after DuET, on the raw DuET file, before metadata — it exits 1 on a MuseScore-regenerated file):
 
 ```bash
-.venv/bin/python scripts/normalize_meter_tempo.py \
-  'output/<slug>/<slug>.musicxml' 'output/<slug>/<slug>.musicxml' \
-  --tempo <bpm> --meter <B/T>
+.venv/bin/python scripts/normalize_tempo.py \
+  'output/<slug>/<slug>.musicxml' 'output/<slug>/<slug>.musicxml' --tempo <bpm>
 ```
 
-It sets ONE constant quarter-note tempo and rewrites every bar to a single meter, trimming any overfull bar's trailing beats. It is a targeted text edit (not a music21 round-trip) — tick-based and chord-aware, so the rest of the engraving is intact. The trimmed beats are *removed content*, so flag them for by-ear review. Skip this step when DuET's meter/tempo already match the ground truth.
+It sets ONE constant quarter-note tempo: the first metronome mark and first playback tempo are set, all others removed; *rit.* / *a tempo* text stays. It is a targeted text edit (not a music21 round-trip), so the rest of the engraving is intact. Skip this step when DuET's tempo already matches. **Meter has no override**: if the engraved meter disagrees with the ground truth, do not try to fix it — tell the user and record it for `CLEANUP_NOTES.md` (re-barring is done by hand in MuseScore).
 
 ## 3. Set the score metadata (rule)
 

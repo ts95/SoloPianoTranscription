@@ -226,7 +226,7 @@ from satisfactory."**
   and **31.1% for Finale 2014** (p < 10⁻⁵), with onset-time error nearly halved vs MuseScore
   (Nakamura et al., *Towards Complete Polyphonic Music Transcription*, ICASSP 2018). When the
   user says "MuseScore's MIDI import is unreliable," there is a benchmark behind it — which is
-  also why this pipeline forbids it and quantizes in-house.
+  also why this pipeline forbids it (it quantized in-house when this was written; DuET does that step now).
 - **HMM/MRF methods were SOTA as of 2018** — metrical HMM best for onset quantization, a Markov
   random field best for note-value (duration) recognition — and the authors of the best
   integrated system of that period call its output scores "far from satisfactory," containing
@@ -255,6 +255,8 @@ gap.
 ---
 
 ## 6. What concretely can be done here
+
+> **Historical (pre-DuET).** This section describes the in-house quantizer (`quantize`, `post`, `beats --refine`, `test_quantize_grid.py`) that was retired when DuET took over the MIDI → score step. None of those commands exist any more. It is kept as a record of why that approach was hard.
 
 Ordered by leverage-to-effort. The pipeline already does the right *category* of thing
 (beat-tracked DP quantization, per-beat subdivision, pedal-aware durations, cost-model hand

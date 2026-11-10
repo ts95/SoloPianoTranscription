@@ -11,7 +11,7 @@ Input: a path to an audio file (wav preferred; mp3 works). Pipeline convention: 
 .venv/bin/transkun '<input-audio>' '<output>.mid' --device cpu
 ```
 
-- Transkun expects 44.1 kHz audio. The pipeline `.wav` (from `download-audio`) is already prepared. For user-supplied audio in any format/rate, run it through the normalizer first — it also applies linear loudness normalization, which keeps velocities in the model's comfortable range:
+- Transkun expects 44.1 kHz audio. The pipeline `.wav` (from `download-audio`) is already prepared. For user-supplied audio in any format/rate, run it through the normalizer first — it also applies one static gain toward −16 LUFS, which keeps velocities in the model's comfortable range:
   `scripts/prepare_audio.sh '<input>' '<input>-prepared.wav'`
 - Avoid feeding lossy re-encodes when a better source exists (e.g. don't convert flac/wav to mp3 first — each lossy generation costs accuracy).
 - Transcription takes a few minutes per piece on CPU. Run the command in the background and wait for completion — slow is normal, don't kill it prematurely.
@@ -27,5 +27,5 @@ Transkun is trained on solo piano. Warn the user that results degrade with: othe
 
 ## Troubleshooting
 
-- `transkun: command not found` → venv missing or incomplete: `python3.11 -m venv .venv && .venv/bin/pip install transkun yt-dlp`.
+- `transkun: command not found` → venv missing or incomplete: `python3.11 -m venv .venv && .venv/bin/pip install transkun yt-dlp music21 'llvmlite==0.42.0' 'numba==0.59.1' librosa`.
 - Out-of-memory or very long files: split the audio with ffmpeg and transcribe segments, or pass `--segmentSize`/`--segmentHopSize` (see `transkun --help`).

@@ -16,8 +16,10 @@ A. Thin re-strikes under pedal: a >=3-note chord that introduces no new
    two notes (RH: melody + one inner) or the bottom note (LH: bass).
 B. Reduce LH stacks the RH already covers: where the simultaneous RH event
    has >=3 notes, the LH keeps at most bass + octave/fifth.
-C. Cap hand span at an octave: drop inner notes whose pitch class is still
-   present in the same-time two-hand aggregate until the chord fits a hand.
+C. Cap hand span at an octave: shrink from the unprotected end (RH drops its
+   bottom note, LH its top) — dropping a note whose pitch class is still
+   present in the same-time two-hand aggregate, otherwise folding it an
+   octave inward — until the chord fits a hand.
 
 Tied chords are left untouched (thinning one end of a tie orphans the other).
 
@@ -151,8 +153,6 @@ def simplify(score, bar_ql):
                 if changed:
                     el = replace_pitches(p, el, keep, stats)
                     stats["spans_capped"] += 1
-
-            prev_pitches = set(ps)
     return stats
 
 

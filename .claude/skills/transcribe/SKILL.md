@@ -15,9 +15,9 @@ Follow the `download-audio` skill (WAV for transcription, mp3 for listening — 
 
 ```bash
 .venv/bin/yt-dlp -x --audio-format wav --restrict-filenames \
-  -o 'output/%(title)s/%(title)s.%(ext)s' '<url>'
-scripts/prepare_audio.sh 'output/<slug>/<slug>.wav' 'output/<slug>/<slug>.prepared.wav'
-mv 'output/<slug>/<slug>.prepared.wav' 'output/<slug>/<slug>.wav'
+  -o 'output/%(title)s/%(title)s.source.%(ext)s' '<url>'
+scripts/prepare_audio.sh 'output/<slug>/<slug>.source.wav' 'output/<slug>/<slug>.wav' \
+  && rm 'output/<slug>/<slug>.source.wav'
 /opt/homebrew/bin/ffmpeg -i 'output/<slug>/<slug>.wav' -codec:a libmp3lame -q:a 0 \
   'output/<slug>/<slug>.mp3'
 ```
@@ -40,15 +40,18 @@ Follow the `cleanup-score` skill, steps 1–3: web ground-truth lookup (key/mete
 
 ## Stage 4 — Engrave the score with DuET
 
-Follow the `midi-to-musicxml` skill: run DuET on `<slug>.cleaned.mid` → `<slug>.musicxml`, set the metadata (title/composer/arranger/performer from stage 3), convert to `.mscz`/`.pdf`, and add harmony pedaling. DuET infers the score's own key/meter/tempo and engraves runs, glissandi, and hand assignment — there is no BPM grid to pick.
+Follow the `midi-to-musicxml` skill: run DuET on `<slug>.cleaned.mid` → `<slug>.musicxml`, normalize the tempo to ground truth if it disagrees, set the metadata (title/composer/arranger/performer from stage 3), convert to `.mscz`/`.pdf`, and add harmony pedaling. DuET infers the score's own key/meter/tempo and engraves runs, glissandi, and hand assignment — there is no BPM grid to pick.
 
 **Visual inspection (rule)**: Read the PDF (at least first, a busy middle, and final page) and look for obvious engraving issues — floating/doubled marks, pedal not under the bass staff, collisions, voice clutter, rest spray, drone durations. Fix what is decidable, re-export, re-inspect; flag the rest.
 
+## Stage 5 — Verify and write the hand-off
+
+Follow the `cleanup-score` skill, steps 5–6: the note-type histogram, the `verify` pass (score-vs-recording chroma, written to `verify.json`), and `CLEANUP_NOTES.md` with the verify-by-ear checklist, including DuET's `review.json` items. Do not redo steps 1–4 — the cleaned MIDI and the score already exist.
+
 ## Wrap up
 
-Report all artifact paths (mp3, mid, cleaned.mid, musicxml, mscz, pdf) and:
+Report all artifact paths (mp3, mid, cleaned.mid, musicxml, mscz, pdf, CLEANUP_NOTES.md), the top human-attention items from `CLEANUP_NOTES.md`, and:
 
-- Suggest running `/cleanup-score output/<slug>/` next — it runs the `verify` pass (score-vs-recording chroma) and writes `CLEANUP_NOTES.md` with a verify-by-ear checklist, including DuET's `review.json` items.
 - The `.cleaned.mid` can be auditioned to check transcription quality.
 - The `.musicxml` is for other notation software; the `.mscz` opens directly in MuseScore 4.
-- **Dynamics are not engraved** — the user adds them by hand from the recording.
+- **Dynamics are DuET's block-level draft** — the user refines them by hand from the recording.
