@@ -607,6 +607,10 @@ def extract_measure_data(mscx_path, staff_ids=('1', '2')):
                         current_sig_d = int(sd.text)
 
         ticks = get_time_sig_ticks(current_sig_n, current_sig_d)
+        if meas.get('len'):
+            # pickup / irregular bar: its real length, not the time signature's —
+            # a pedal laid past the bar's end makes MuseScore reject the file
+            ticks = frac_to_ticks(meas.get('len'))
         measure_info.append({
             'number': i + 1,
             'time_sig': f'{current_sig_n}/{current_sig_d}',

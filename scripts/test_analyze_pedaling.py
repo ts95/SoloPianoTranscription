@@ -103,7 +103,24 @@ def test_leap_to_a_tone_of_the_same_chord_is_not_a_new_bass():
     print("ok: a quarter-note left hand leaping within one chord is not re-pedalled on every beat")
 
 
+def test_pickup_bar_uses_its_real_length():
+    import os
+    import tempfile
+    from musescore_pedal_lib import extract_measure_data
+    mscx = ('<museScore><Score><Staff id="2">'
+            '<Measure len="1/2"><voice><TimeSig><sigN>4</sigN><sigD>4</sigD></TimeSig></voice></Measure>'
+            '<Measure><voice/></Measure></Staff></Score></museScore>')
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "s.mscx")
+        with open(path, "w") as f:
+            f.write(mscx)
+        ms = extract_measure_data(path, staff_ids=("2",))
+    assert [m["ticks"] for m in ms] == [960, 1920], ms
+    print("ok: a pickup bar reports its real length, so no pedal runs past its end")
+
+
 if __name__ == "__main__":
+    test_pickup_bar_uses_its_real_length()
     test_leap_to_a_tone_of_the_same_chord_is_not_a_new_bass()
     test_bass_arrivals_anywhere_in_the_bar()
     test_pedal_segments_are_at_least_a_beat()
