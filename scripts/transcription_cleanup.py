@@ -17,8 +17,11 @@ flags; this script only does the mechanical work and reports what it did.
 """
 import argparse
 import json
+import os
 import statistics
+import subprocess
 import sys
+import warnings
 
 import numpy as np
 import pretty_midi
@@ -139,6 +142,16 @@ def key_estimate(notes):
     return results[:3]
 
 
+def scale_for_clean(notes, key_arg):
+    """Scale pitch classes for the artifact music-prior: the ground-truth
+    --key when given, else the top statistical estimate."""
+    if key_arg:
+        n = pretty_midi.key_name_to_key_number(key_arg)
+        base = MAJOR_SCALE_PCS if n < 12 else MINOR_SCALE_PCS
+        return {(n % 12 + pc) % 12 for pc in base}
+    return key_scale_pcs(key_estimate(notes)[0]["key"])
+
+
 def onset_envelope(notes, frame=0.05):
     end = max(n.end for n in notes)
     env = np.zeros(int(end / frame) + 2)
@@ -238,21 +251,6 @@ def clusters_and_runs(notes):
     return pruned[:20], runs[:20]
 
 
-def hand_split(notes):
-    pitches = sorted(n.pitch for n in notes)
-    hist = {}
-    for p in pitches:
-        hist[p] = hist.get(p, 0) + 1
-    # largest pitch gap in the middle register is the natural split candidate
-    mid = [p for p in range(48, 72)]
-    best_gap, split = 0, 60
-    present = sorted(set(pitches))
-    for a, b in zip(present, present[1:]):
-        if a in range(48, 72) and (b - a) > best_gap:
-            best_gap, split = b - a, (a + b) // 2
-    return {"suggested_split": pretty_midi.note_number_to_name(split), "gap_semitones": best_gap}
-
-
 def cmd_analyze(args):
     pm = pretty_midi.PrettyMIDI(args.input)
     notes = all_notes(pm)
@@ -282,15 +280,8 @@ def cmd_analyze(args):
         "tempo_pretty_midi_bpm": round(float(pm.estimate_tempo()), 1),
         "tempo_stability": tempo_stability(notes),
         "pedal_cc64_regions": len(pedal_regions(pm)),
-        "hand_split": hand_split(notes),
         "dense_clusters": clusters,
         "fast_runs": runs,
-        "dynamics_preview": {
-            "profile": [{"t": round(t, 1), "vel": round(v, 1), "level": dynamic_level(v)}
-                        for t, v in velocity_profile(pm)[::5]],
-            "hairpins": [{"start": round(a, 1), "end": round(b, 1), "kind": k}
-                         for a, b, k in find_hairpins(velocity_profile(pm))],
-        },
     }
     print(json.dumps(report, indent=2))
     return 0
@@ -304,7 +295,7 @@ def cmd_clean(args):
         return 1
 
     drop = set()
-    scale = key_scale_pcs(key_estimate(notes)[0]["key"])
+    scale = scale_for_clean(notes, args.key)
     candidates = find_artifacts(notes, args.min_dur, args.vel_ratio)
     artifacts = [n for n in candidates if not looks_musical(n, notes, scale)]
     kept_suspects = [n for n in candidates if looks_musical(n, notes, scale)]
@@ -363,14 +354,29 @@ def cmd_clean(args):
     return 0
 
 
+def bar_times_from_midi(path):
+    """Bar start times (s) of a MIDI file, plus its end time as the last element.
+    Honors every tempo and time-signature change."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # mscore puts tempo events on track 1
+        pm = pretty_midi.PrettyMIDI(path)
+    end = float(pm.get_end_time())
+    return [float(d) for d in pm.get_downbeats() if d < end - 1e-6] + [end]
+
+
+def render_ok(mscore, score, target):
+    """Run `mscore score -o target`; True iff target exists and is non-empty.
+    The exit code is ignored: mscore can exit 134 on shutdown after a good write."""
+    subprocess.run([mscore, score, "-o", target], capture_output=True)
+    return os.path.exists(target) and os.path.getsize(target) > 0
+
+
 def cmd_verify(args):
     """Objective score-vs-recording check: render the score with mscore, DTW-align
     CQT chroma of render and recording, score per-bar cosine similarity, and
     cross-check repeated sections. Writes verify.json; worst bars belong in
     CLEANUP_NOTES so listening time goes where the score is most wrong."""
-    import subprocess
     import tempfile
-    import warnings
     from music21 import converter as m21converter
 
     with warnings.catch_warnings():
@@ -378,10 +384,6 @@ def cmd_verify(args):
         import librosa
 
     score = m21converter.parse(args.score)
-    mm = score.recurse().getElementsByClass("MetronomeMark").first()
-    bpm = float(mm.number) if mm is not None else 120.0
-    ts = score.recurse().getElementsByClass("TimeSignature").first()
-    bar_ql = float(ts.barDuration.quarterLength) if ts is not None else 4.0
     parts = list(score.parts)
     n_bars = max(len(p.getElementsByClass("Measure")) for p in parts)
     bar_pitch_sets = []
@@ -400,11 +402,12 @@ def cmd_verify(args):
         # where mp3 export still works, and lossy encoding is irrelevant to
         # chroma DTW.
         render_wav = f"{td}/render.mp3"
-        res = subprocess.run([args.mscore, args.score, "-o", render_wav],
-                             capture_output=True)
-        if res.returncode != 0 or not __import__("os").path.getsize(render_wav):
-            print(json.dumps({"error": f"mscore render failed ({res.returncode})"}))
-            return 1
+        render_mid = f"{td}/render.mid"
+        for target in (render_wav, render_mid):
+            if not render_ok(args.mscore, args.score, target):
+                print(json.dumps({"error": f"mscore render failed: {os.path.basename(target)}"}))
+                return 1
+        times = bar_times_from_midi(render_mid)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             HOP, SR = 2048, 22050
@@ -419,11 +422,11 @@ def cmd_verify(args):
         audio_for_render.setdefault(int(rf), []).append(int(af))
 
     fps = SR / HOP
-    bar_seconds_render = bar_ql * 60.0 / bpm
+    n_bars = min(n_bars, len(times) - 1)
     bars = []
     for k in range(n_bars):
-        f0 = int(k * bar_seconds_render * fps)
-        f1 = max(f0 + 1, int((k + 1) * bar_seconds_render * fps))
+        f0 = int(times[k] * fps)
+        f1 = max(f0 + 1, int(times[k + 1] * fps))
         afs = sorted(a for f in range(f0, min(f1, cr.shape[1]))
                      for a in audio_for_render.get(f, []))
         if not afs:
@@ -474,7 +477,7 @@ def cmd_verify(args):
     report = {
         "score": args.score,
         "audio": args.audio,
-        "render_bpm": bpm,
+        "render_seconds": round(times[-1], 1),
         "bars_compared": len(bars),
         "median_similarity": round(statistics.median(b["similarity"] for b in bars), 3)
         if bars else None,
@@ -519,52 +522,6 @@ def cmd_consensus(args):
     return 0
 
 
-DYNAMIC_LEVELS = [(30, "pp"), (45, "p"), (60, "mp"), (75, "mf"), (90, "f"), (200, "ff")]
-
-
-def velocity_profile(pm, window=1.0, ):
-    """Smoothed per-window median velocity: [(time_s, velocity)]."""
-    notes = all_notes(pm)
-    end = max(n.end for n in notes)
-    buckets = [[] for _ in range(int(end / window) + 1)]
-    for n in notes:
-        buckets[int(n.start / window)].append(n.velocity)
-    raw = [(i * window, statistics.median(b)) for i, b in enumerate(buckets) if b]
-    return [
-        (raw[i][0], sum(v for _, v in raw[max(0, i - 1):i + 2]) / len(raw[max(0, i - 1):i + 2]))
-        for i in range(len(raw))
-    ]
-
-
-def dynamic_level(vel):
-    for threshold, name in DYNAMIC_LEVELS:
-        if vel < threshold:
-            return name
-    return "ff"
-
-
-def find_hairpins(profile, min_delta=12, min_span=3.0):
-    """Sustained monotonic velocity trends -> [(start_s, end_s, 'cresc'|'dim')]."""
-    hairpins = []
-    i = 0
-    while i < len(profile) - 1:
-        for direction in (1, -1):
-            j = i
-            while (j + 1 < len(profile)
-                   and direction * (profile[j + 1][1] - profile[j][1]) > -1.5):
-                j += 1
-            delta = direction * (profile[j][1] - profile[i][1])
-            span = profile[j][0] - profile[i][0]
-            if delta >= min_delta and span >= min_span:
-                hairpins.append((profile[i][0], profile[j][0],
-                                 "cresc" if direction == 1 else "dim"))
-                i = j
-                break
-        else:
-            i += 1
-    return hairpins
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -591,11 +548,12 @@ def main():
 
     v = sub.add_parser("verify", help="render the score and compare to the recording "
                                       "per bar (chroma DTW) — targets listening time")
-    v.add_argument("score", help="the .cleaned.musicxml (must carry a metronome mark)")
+    v.add_argument("score", help="the score .musicxml")
     v.add_argument("audio", help="the original recording (wav/mp3)")
     v.add_argument("--output", help="write the full JSON report here (verify.json)")
     v.add_argument("--worst", type=int, default=10, help="how many worst bars to list")
-    v.add_argument("--mscore", default="/Applications/MuseScore 4.app/Contents/MacOS/mscore")
+    v.add_argument("--mscore", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "mscore.sh"),
+                   help="MuseScore CLI (default: scripts/mscore.sh, which honours $MSCORE)")
     v.set_defaults(fn=cmd_verify)
 
     n = sub.add_parser("consensus", help="flag notes missing from pitch-shifted "
