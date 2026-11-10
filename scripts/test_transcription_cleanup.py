@@ -7,8 +7,9 @@ import stat
 import tempfile
 
 import mido
+import numpy as np
 
-from transcription_cleanup import bar_times_from_midi, render_ok, scale_for_clean
+from transcription_cleanup import bar_similarity, bar_times_from_midi, render_ok, scale_for_clean
 
 
 def test_bar_times_follow_tempo_and_meter_changes():
@@ -54,7 +55,17 @@ def test_clean_uses_the_given_key():
     print("ok: the artifact music-prior uses --key when given")
 
 
+def test_silent_bars_are_not_scored():
+    a = np.array([1.0, 0.0, 2.0])
+    assert bar_similarity(a, a * 3) == 1.0
+    assert bar_similarity(a, np.zeros(3)) is None      # the recording is silent there (video outro)
+    assert bar_similarity(np.zeros(3), a) is None      # the score is silent there
+    assert bar_similarity(np.array([np.nan] * 3), a) is None
+    print("ok: a bar with silent audio on either side is skipped, not scored 0.0")
+
+
 if __name__ == "__main__":
     test_bar_times_follow_tempo_and_meter_changes()
     test_render_judged_by_output_file_not_exit_code()
     test_clean_uses_the_given_key()
+    test_silent_bars_are_not_scored()

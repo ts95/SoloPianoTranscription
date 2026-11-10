@@ -371,6 +371,15 @@ def render_ok(mscore, score, target):
     return os.path.exists(target) and os.path.getsize(target) > 0
 
 
+def bar_similarity(vr, va):
+    """Cosine similarity of the rendered and recorded chroma of one bar; None when
+    either side is silent (e.g. DTW parks the last bars on a video's silent outro)."""
+    denom = float(np.linalg.norm(vr) * np.linalg.norm(va))
+    if not np.isfinite(denom) or denom == 0:
+        return None
+    return round(float(vr @ va / denom), 6)
+
+
 def cmd_verify(args):
     """Objective score-vs-recording check: render the score with mscore, DTW-align
     CQT chroma of render and recording, score per-bar cosine similarity, and
@@ -424,6 +433,7 @@ def cmd_verify(args):
     fps = SR / HOP
     n_bars = min(n_bars, len(times) - 1)
     bars = []
+    silent = []
     for k in range(n_bars):
         f0 = int(times[k] * fps)
         f1 = max(f0 + 1, int(times[k + 1] * fps))
@@ -434,8 +444,10 @@ def cmd_verify(args):
         a0, a1 = afs[0], max(afs[-1] + 1, afs[0] + 1)
         vr = cr[:, f0:min(f1, cr.shape[1])].mean(axis=1)
         va = ca[:, a0:min(a1, ca.shape[1])].mean(axis=1)
-        denom = (np.linalg.norm(vr) * np.linalg.norm(va))
-        sim = float(vr @ va / denom) if denom > 0 else 0.0
+        sim = bar_similarity(vr, va)
+        if sim is None:
+            silent.append(k + 1)
+            continue
         stretch = ((a1 - a0) / (f1 - f0)) if f1 > f0 else 1.0
         bars.append({"bar": k + 1, "similarity": round(sim, 3),
                      "audio_time_s": round(a0 / fps, 1),
@@ -479,6 +491,7 @@ def cmd_verify(args):
         "audio": args.audio,
         "render_seconds": round(times[-1], 1),
         "bars_compared": len(bars),
+        "silent_bars_skipped": silent,
         "median_similarity": round(statistics.median(b["similarity"] for b in bars), 3)
         if bars else None,
         "worst_bars": ranked[:args.worst],
