@@ -1,8 +1,13 @@
 #!/bin/bash
-# Prepare audio for Transkun: two-pass EBU R128 loudness normalization with
-# LINEAR gain (a single static gain per file — dynamic-mode loudnorm would
-# compress the dynamics and skew the velocities Transkun emits), resampled to
-# the 44.1 kHz the model expects.
+# Prepare audio for Transkun: ONE static gain per file (never a compressor —
+# compression would skew the velocities Transkun emits), resampled to the
+# 44.1 kHz the model expects.
+#
+# The gain moves the file toward -16 LUFS integrated, capped so the true peak
+# stays <= -1.5 dBTP. A peaky recording therefore ends up quieter than -16 LUFS
+# rather than being limited. (ffmpeg's two-pass loudnorm is NOT used for the
+# gain: with linear=true it silently falls back to dynamic mode whenever the
+# peak or loudness range exceeds its targets.)
 #
 # Usage: prepare_audio.sh <input-audio> <output.wav>
 set -euo pipefail
@@ -10,15 +15,20 @@ set -euo pipefail
 FFMPEG=/opt/homebrew/bin/ffmpeg
 IN="$1"
 OUT="$2"
-TARGET="I=-16:TP=-1.5:LRA=11"
+TARGET_I=-16
+TARGET_TP=-1.5
 
 STATS=$("$FFMPEG" -hide_banner -nostats -i "$IN" \
-  -af "loudnorm=$TARGET:print_format=json" -f null - 2>&1 | sed -n '/^{/,/^}/p')
+  -af "loudnorm=I=$TARGET_I:TP=$TARGET_TP:LRA=11:print_format=json" -f null - 2>&1 | sed -n '/^{/,/^}/p')
 
-get() { printf '%s' "$STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['$1'])"; }
+GAIN=$(printf '%s' "$STATS" | python3 -c "
+import json, math, sys
+d = json.load(sys.stdin)
+g = min($TARGET_I - float(d['input_i']), $TARGET_TP - float(d['input_tp']))
+if not math.isfinite(g):
+    sys.exit('prepare_audio: input is silent')
+print(round(g, 2))")
 
-"$FFMPEG" -y -hide_banner -nostats -i "$IN" \
-  -af "loudnorm=$TARGET:measured_I=$(get input_i):measured_TP=$(get input_tp):measured_LRA=$(get input_lra):measured_thresh=$(get input_thresh):offset=$(get target_offset):linear=true" \
-  -ar 44100 "$OUT"
+"$FFMPEG" -y -hide_banner -nostats -i "$IN" -af "volume=${GAIN}dB" -ar 44100 "$OUT"
 
-echo "wrote $OUT (44.1 kHz, linear loudnorm from integrated $(get input_i) LUFS)"
+echo "wrote $OUT (44.1 kHz, static gain ${GAIN} dB)"
