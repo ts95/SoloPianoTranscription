@@ -45,7 +45,10 @@ If the tempo disagrees with the ground truth, run the normalizer (right after Du
   'output/<slug>/<slug>.musicxml' 'output/<slug>/<slug>.musicxml' --tempo <bpm>
 ```
 
-It sets ONE constant quarter-note tempo: the first metronome mark and first playback tempo are set, all others removed; *rit.* / *a tempo* text stays. It is a targeted text edit (not a music21 round-trip), so the rest of the engraving is intact. Skip this step when DuET's tempo already matches. **Meter has no override**: if the engraved meter disagrees with the ground truth, do not try to fix it — tell the user and record it for `CLEANUP_NOTES.md` (re-barring is done by hand in MuseScore).
+It sets ONE constant quarter-note tempo: the first metronome mark and first playback tempo are set, all others removed; *rit.* / *a tempo* text stays. It is a targeted text edit (not a music21 round-trip), so the rest of the engraving is intact. Skip this step when DuET's tempo already matches. **Meter has no override**: if the engraved meter disagrees with the ground truth, tell the user and record it for `CLEANUP_NOTES.md` (re-barring is done by hand in MuseScore) — except for these two decidable cases:
+
+- **3/4 vs 6/8** (bars of six eighths either way; DuET writes 3/4). Decide by style and by how the pulse groups (two dotted-quarter pulses → 6/8), then relabel after the tempo step: `.venv/bin/python scripts/relabel_meter.py '<slug>.musicxml' '<slug>.musicxml' --from 3/4 --to 6/8`. It changes only the time signature, beaming and tempo-mark unit.
+- **Stray longer bars in a steady piece** (e.g. a few 4/4 bars among 3/4). Measure each bar's real duration from `score.npz` (`bar_starts`, note onsets) against the cleaned MIDI's note times. If the bars are all the same length, DuET's beat-count correction invented the extra beats: re-run DuET with `--engraving-config <file.json>` where the file contains `{"grid_count_fix": false}` (the flag takes a file path, not inline JSON).
 
 ## 3. Set the score metadata (rule)
 
