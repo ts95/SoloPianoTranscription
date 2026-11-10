@@ -100,8 +100,13 @@ scripts/prepare_audio.sh 'output/<slug>/<slug>.source.wav' 'output/<slug>/<slug>
 D=$(mktemp -d)/duet
 scripts/duet.sh output/<slug>/<slug>.cleaned.mid -o "$D" --device cpu
 mv "$D"/* output/<slug>/
-mv output/<slug>/score.musicxml output/<slug>/<slug>.musicxml
+mv output/<slug>/score.musicxml output/<slug>/<slug>.duet.musicxml   # raw DuET score — never edited
+cp output/<slug>/<slug>.duet.musicxml output/<slug>/<slug>.musicxml
 rm -rf "$(dirname "$D")"
+
+# Measure each bar's real duration: is DuET's meter/tempo right? (prints recommendations)
+.venv/bin/python scripts/bar_timing.py 'output/<slug>/<slug>.cleaned.mid' \
+  'output/<slug>/score.npz' --score 'output/<slug>/<slug>.duet.musicxml'
 
 # (Optional) If DuET's inferred tempo disagrees with the ground truth,
 # force one constant tempo. (No meter override — re-bar by hand in MuseScore.)

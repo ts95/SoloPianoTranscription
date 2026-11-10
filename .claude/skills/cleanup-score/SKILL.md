@@ -70,7 +70,7 @@ Then the objective check — render the score and compare it to the recording ba
   --output 'output/<slug>/verify.json'
 ```
 
-Interpret: `median_similarity` ≥ ~0.95 means the score broadly matches; `worst_bars` (with mm:ss) are where to listen first; `drift_suspects` mark bars whose alignment stretches; `repeat_inconsistencies` are bar pairs where the audio repeats but the transcribed pitch classes differ. All of these go into CLEANUP_NOTES, not into automatic fixes (chroma is octave-blind; a listening guide, not proof).
+Interpret: `median_similarity` ≥ ~0.95 means the score broadly matches; `worst_bars` (with mm:ss) are where to listen first; `drift_suspects` mark bars whose alignment stretches; `repeat_inconsistencies` are bar pairs where the audio repeats but the transcribed pitch classes differ. All of these go into CLEANUP_NOTES, not into automatic fixes (chroma is octave-blind; a listening guide, not proof). `silent_bars_skipped` lists bars with no sound on one side (typically the last bar landing on a video's silent outro) — they are not scored, so ignore them unless a bar in the middle of the piece appears there.
 
 Optional deep check when the user wants extra confidence (~3× stage-2 time): re-transcribe pitch-shifted audio and cross-check —
 

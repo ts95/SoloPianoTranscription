@@ -21,7 +21,8 @@ DuET's `-o` must point at a directory that **does not exist yet** — it creates
 D=$(mktemp -d)/duet
 scripts/duet.sh 'output/<slug>/<slug>.cleaned.mid' -o "$D" --device cpu
 mv "$D"/* 'output/<slug>/'
-mv 'output/<slug>/score.musicxml' 'output/<slug>/<slug>.musicxml'
+mv 'output/<slug>/score.musicxml' 'output/<slug>/<slug>.duet.musicxml'   # raw DuET score — never edited
+cp 'output/<slug>/<slug>.duet.musicxml' 'output/<slug>/<slug>.musicxml'
 rm -rf "$(dirname "$D")"
 ```
 
@@ -31,6 +32,15 @@ rm -rf "$(dirname "$D")"
 
 ## 2. (Optional) Normalize the tempo to the ground truth
 
+First measure the recording against DuET's bars — this, not the look of the score, decides the tempo and meter steps:
+
+```bash
+.venv/bin/python scripts/bar_timing.py 'output/<slug>/<slug>.cleaned.mid' \
+  'output/<slug>/score.npz' --score 'output/<slug>/<slug>.duet.musicxml'
+```
+
+Follow its `recommendations`. When `steady` is true, normalize to the **measured** tempo (`measured_tempo_quarter_bpm`) — it is the cover's real tempo; the web value describes the original recording and is only a cross-check. When `pickup_mismatch` is true, compare the pickup bar with the first notes of the cleaned MIDI and fix or flag it.
+
 DuET infers a tempo per section — visible metronome marks plus hidden `<sound tempo>` playback changes — and **has no override flag**. If the web ground-truth tempo is known and differs from what DuET engraved, force it. Check the engraved meter/tempo first:
 
 ```bash
@@ -38,14 +48,14 @@ grep -oE '<time><beats>[^<]*</beats><beat-type>[^<]*</beat-type>' 'output/<slug>
 grep -oE '<per-minute>[0-9]+|<sound tempo="[0-9]+' 'output/<slug>/<slug>.musicxml'
 ```
 
-If the tempo disagrees with the ground truth, run the normalizer (right after DuET, on the raw DuET file, before metadata — it exits 1 on a MuseScore-regenerated file):
+If the tempo disagrees with the ground truth, run the normalizer (right after DuET (right after DuET):
 
 ```bash
 .venv/bin/python scripts/normalize_tempo.py \
   'output/<slug>/<slug>.musicxml' 'output/<slug>/<slug>.musicxml' --tempo <bpm>
 ```
 
-It sets ONE constant quarter-note tempo: the first metronome mark and first playback tempo are set, all others removed; *rit.* / *a tempo* text stays. It is a targeted text edit (not a music21 round-trip), so the rest of the engraving is intact. Skip this step when DuET's tempo already matches. **Meter has no override**: if the engraved meter disagrees with the ground truth, tell the user and record it for `CLEANUP_NOTES.md` (re-barring is done by hand in MuseScore) — except for these two decidable cases:
+It sets ONE constant quarter-note tempo: the first metronome mark and first playback tempo are set, all others removed; *rit.* / *a tempo* text stays. It edits only the tempo marks (not a music21 round-trip) and works on a MuseScore export too, so it can be re-applied after hand edits. Skip this step when DuET's tempo already matches. **Meter has no override**: if the engraved meter disagrees with the ground truth, tell the user and record it for `CLEANUP_NOTES.md` (re-barring is done by hand in MuseScore) — except for these two decidable cases:
 
 - **3/4 vs 6/8** (bars of six eighths either way; DuET writes 3/4). Decide by style and by how the pulse groups (two dotted-quarter pulses → 6/8), then relabel after the tempo step: `.venv/bin/python scripts/relabel_meter.py '<slug>.musicxml' '<slug>.musicxml' --from 3/4 --to 6/8`. It changes only the time signature, beaming and tempo-mark unit.
 - **Stray longer bars in a steady piece** (e.g. a few 4/4 bars among 3/4). Measure each bar's real duration from `score.npz` (`bar_starts`, note onsets) against the cleaned MIDI's note times. If the bars are all the same length, DuET's beat-count correction invented the extra beats: re-run DuET with `--engraving-config <file.json>` where the file contains `{"grid_count_fix": false}` (the flag takes a file path, not inline JSON).
@@ -81,7 +91,7 @@ scripts/mscore.sh 'output/<slug>/<slug>.musicxml' -o 'output/<slug>/<slug>.mscz'
 scripts/mscore.sh 'output/<slug>/<slug>.mscz' -o 'output/<slug>/<slug>.pdf'
 ```
 
-- `mscore` often prints Qt/plugin warnings to stderr even on success. Judge by the exit code and the output file existing and being non-empty. It occasionally aborts with exit 134 (crash-reporter noise on shutdown) — retry once or twice.
+- `scripts/mscore.sh` retries up to 3 times and judges by the output file (MuseScore's exit-134 shutdown crash after a good write counts as success). A non-zero exit from the wrapper is a real failure — look at MuseScore's log in `~/Library/Application Support/MuseScore/MuseScore4/logs/`.
 
 ## 5. Harmony pedaling
 
