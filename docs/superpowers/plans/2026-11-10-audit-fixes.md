@@ -1155,7 +1155,7 @@ S2 applies in three places: `CLAUDE.md`, `README.md`, `.claude/skills/midi-to-mu
 
 Run:
 ```bash
-grep -rn "normalize_meter_tempo\|--meter\|writes none\|not write dynamics\|absent by design\|not engraved\|\.prepared\.wav\|linear loudness\|linear loudnorm\|trimming\|trimmed beats\|overfull" CLAUDE.md README.md .claude/skills scripts
+grep -rn "normalize_meter_tempo\|--meter\|writes none\|not write dynamics\|absent by design\|not engraved\|\.prepared\.wav\|linear loudness\|linear loudnorm\|trimming\|trimmed beats\|trims overfull" CLAUDE.md README.md .claude/skills scripts
 ```
 Expected: no output.
 
