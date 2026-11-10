@@ -11,4 +11,4 @@
 # All arguments pass through unchanged and the exit code is preserved.
 # Override the CLI location with the DUET env var if DuET lives elsewhere, e.g.
 #   DUET=/path/to/DuET/.venv/bin/duet scripts/duet.sh input.mid -o out/ --device cpu
-exec "${DUET:-/Users/tonisucic/Repos/DuET/.venv/bin/duet}" "$@"
+exec "${DUET:-$HOME/Repos/DuET/.venv/bin/duet}" "$@"
