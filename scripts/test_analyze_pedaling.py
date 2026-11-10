@@ -95,7 +95,16 @@ def test_pedal_segments_are_at_least_a_beat():
     print("ok: no pedal segment is shorter than a beat")
 
 
+def test_leap_to_a_tone_of_the_same_chord_is_not_a_new_bass():
+    # C#4 leaps down to E3 (still C#m), then B2 F#3: ONE change, at the real new bass
+    assert seq([(0, 61), (480, 52), (960, 47), (1440, 54)]) == [960]
+    # ...but a same-chord drop into the bass register is a bass: Ab1 Ab2 | Eb1 Eb2
+    assert seq([(0, 32), (120, 44), (960, 27), (1080, 39)]) == [960]
+    print("ok: a quarter-note left hand leaping within one chord is not re-pedalled on every beat")
+
+
 if __name__ == "__main__":
+    test_leap_to_a_tone_of_the_same_chord_is_not_a_new_bass()
     test_bass_arrivals_anywhere_in_the_bar()
     test_pedal_segments_are_at_least_a_beat()
     test_arpeggiated_single_harmony_is_not_split()

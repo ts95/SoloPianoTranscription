@@ -33,6 +33,9 @@ _TRIADS = [frozenset((r, (r + third) % 12, (r + 7) % 12))
            for r in range(12) for third in (3, 4)]
 
 
+_BASS_REGISTER = 48  # C3: below this a struck low note is a bass, not a chord tone
+
+
 def beat_ticks(time_sig):
     """Ticks per beat: a dotted quarter in compound meters (6/8, 9/8, 12/8),
     otherwise the denominator's note value."""
@@ -51,7 +54,9 @@ def bass_split_ticks(mdata):
     the bass staff, walking the onsets left to right, a new bass is a struck
     note of a different pitch class than the current segment's lowest note that
     either
-      - DROPS below that lowest note (any onset, on or off the beat), or
+      - DROPS below that lowest note (any onset, on or off the beat) and either
+        lands below C3 or does not fit one major/minor triad with the segment
+        (a leap down to another tone of the same chord is a broken chord), or
       - on a beat, is the lowest note of its beat, at most a fifth above the
         segment's lowest note, and does not fit one major/minor triad together
         with the segment (so root-fifth-third figures stay one pedal).
@@ -81,19 +86,22 @@ def bass_split_ticks(mdata):
         if new % 12 == bass % 12:
             continue
         drop = new < bass
+        window = [p for k, p in notes if t <= k < t + bt]
+        one_triad = any(frozenset(p % 12 for p in seg + window) <= tr for tr in _TRIADS)
+        if drop:
+            # a leap down to another tone of the SAME chord (C#4 -> E3 in C#m) is
+            # a broken chord, not a new bass — unless it lands in the bass register
+            ok = new < _BASS_REGISTER or not one_triad
+        else:
+            ok = t % bt == 0 and new == min(window) and new - bass <= 7 and not one_triad
+        if not ok:
+            continue
         if t - seg_start < bt:
             # too close to the previous split: only a deeper drop may move it
             if drop and last_was_drop and splits:
                 splits[-1] = seg_start = t
                 new_pc = new % 12
             continue
-        if not drop:
-            if t % bt:
-                continue
-            beat = [p for k, p in notes if t <= k < t + bt]
-            if (new != min(beat) or new - bass > 7
-                    or any(frozenset(p % 12 for p in seg + beat) <= tr for tr in _TRIADS)):
-                continue
         splits.append(t)
         seg_start, new_pc, last_was_drop = t, new % 12, drop
     return splits, first_pc, new_pc
