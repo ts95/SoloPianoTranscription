@@ -100,6 +100,7 @@ It prints the marks, the hairpins and the per-bar velocities — put the marks a
 
 ```bash
 scripts/mscore.sh 'output/<slug>/<slug>.musicxml' -o 'output/<slug>/<slug>.mscz'
+.venv/bin/python scripts/credit_arranger.py 'output/<slug>/<slug>.mscz'   # print "Arr. <name>" under the composer
 scripts/mscore.sh 'output/<slug>/<slug>.mscz' -o 'output/<slug>/<slug>.pdf'
 ```
 
