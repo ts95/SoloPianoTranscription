@@ -5,7 +5,7 @@ Usage:
     python3 analyze_pedaling.py <file.mscz> [--staff 2] [--json] [--dump]
 
 Inspects the grand staff and reports per-measure:
-- Harmony changes (bass pitch class at beat 1 vs half-bar) → split recommendation
+- Harmony changes (a new bass note landing on the half-bar) → split recommendation
 - Density (unique pitch classes, note count) → review flag
 - Sustained bass (low notes held half note+) → informational flag only
 - Articulation conflicts (staccato) → review flag
@@ -96,29 +96,32 @@ def analyze_measure(mdata):
     bass_events = _find_bass_events(mdata)
 
     if bass_events:
-        # Find pitch class at tick 0 (or first chord)
-        start_pc = None
-        mid_pc = None
+        # A harmony change at the half-bar means a NEW BASS NOTE lands there —
+        # not merely that the note at the half-bar differs from beat 1 (an
+        # arpeggiated left hand does that in every bar). Over all voices of the
+        # bass staff, the half-bar must (1) strike the lowest note of the second
+        # half, (2) of a different pitch class than the first half's lowest
+        # note, (3) at most a fifth above it: a continuing arpeggio climbs
+        # further, a new bass stays in the bass register.
+        # ponytail: misses a new bass that is anticipated/delayed off the
+        # half-bar or leaps up more than a fifth; false-splits a slow arpeggio
+        # rising by <= a fifth. Upgrade path: chord recognition per half-bar.
+        lows = [(ev['tick'], min(ev['pitches']))
+                for evs in mdata['staves'].get('2', {}).get('voices', {}).values()
+                for ev in evs if ev['type'] == 'Chord' and ev['pitches']]
+        first = [p for t, p in lows if t < half_tick]
+        second = [p for t, p in lows if t >= half_tick]
+        on_half = [p for t, p in lows if t == half_tick]
+        low1 = min(first) if first else None
+        low2 = min(second) if second else None
 
-        for ev in bass_events:
-            if ev['type'] != 'Chord':
-                continue
-            tick = ev['tick']
-            lowest_pc = min(ev['pitches']) % 12 if ev['pitches'] else None
-
-            if tick == 0 or (start_pc is None and tick < half_tick):
-                start_pc = lowest_pc
-            if tick >= half_tick and mid_pc is None:
-                mid_pc = lowest_pc
-            # Also check if a chord spans into the half-tick region
-            if tick < half_tick and tick + ev['dur'] > half_tick and mid_pc is None:
-                # Same chord still sounding at half-bar → same pc
-                mid_pc = lowest_pc
-
+        start_pc = low1 % 12 if low1 is not None else None
+        mid_pc = low2 % 12 if low2 is not None else start_pc
         result['bass_start_pc'] = start_pc
         result['bass_mid_pc'] = mid_pc
 
-        if start_pc is not None and mid_pc is not None and start_pc != mid_pc:
+        if (low1 is not None and on_half and min(on_half) == low2
+                and start_pc != mid_pc and low2 - low1 <= 7):
             result['flags'].append('harm_change')
             # 3/4 and 3/8 have no natural half-bar split — keep single by
             # default and let the user opt into a split via REVIEW.

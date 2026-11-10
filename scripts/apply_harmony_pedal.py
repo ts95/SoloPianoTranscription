@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Replace a score's pedaling with harmony-aware legato pedal marks.
 
-Reads the NOTATED harmony from the .mscz (bass pitch-class at beat 1 vs the
-half-bar) and lays one syncopated pedal per measure, split mid-bar where the
+Reads the NOTATED harmony from the .mscz (does a new bass note land on the
+half-bar?) and lays one syncopated pedal per measure, split mid-bar where the
 harmony changes. This is independent of the transcriber's CC64, which is only
 binary (0/127) and under-segments fast re-pedaling, so it does not track the
 harmony. Edits the .mscz in place (the .bak the library writes is removed
