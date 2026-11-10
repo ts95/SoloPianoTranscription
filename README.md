@@ -8,7 +8,7 @@ Transcribe solo piano performances from YouTube into editable sheet music, for p
 > performance to notation is fundamentally lossy and imperfect (see
 > [§ Limitations](#limitations-the-score-is-a-foundation)), so the result will
 > contain wrong/missed notes, approximate rhythms, and rough voicing and pedaling,
-> and only block-level draft dynamics (refine those by hand). **The rest is expected to be finished
+> and draft dynamics derived from the performed velocities (refine those by ear). **The rest is expected to be finished
 > by hand** in MuseScore, guided by `CLEANUP_NOTES.md` and the recording. The goal
 > is to get you to ~80% in minutes instead of hours, not to hand you a final score.
 
@@ -118,6 +118,8 @@ rm -rf "$(dirname "$D")"
   --title '<title>' --composer '<composer>'
 .venv/bin/python scripts/fill_rests.py \
   output/<slug>/<slug>.musicxml output/<slug>/<slug>.musicxml   # lengthen notes over the rests that follow them
+.venv/bin/python scripts/annotate_dynamics.py output/<slug>/<slug>.musicxml output/<slug>/<slug>.cleaned.mid \
+  output/<slug>/score.npz output/<slug>/<slug>.musicxml --range p-f   # dynamics + hairpins from the velocities
 scripts/mscore.sh output/<slug>/<slug>.musicxml -o output/<slug>/<slug>.mscz
 .venv/bin/python scripts/apply_harmony_pedal.py output/<slug>/<slug>.mscz   # pedal from harmony, not CC64
 scripts/mscore.sh output/<slug>/<slug>.mscz -o output/<slug>/<slug>.musicxml        # regenerate so all formats agree
@@ -144,7 +146,7 @@ Expect to fix, by hand in MuseScore:
   the model; some figures want re-grouping, and barlines may drift against the performance.
 - **Voicing, articulation, and ornaments** — hand/staff assignment, trills written out
   as fast runs (often engraved as grace notes or glissandi), and beaming are approximate.
-- **Dynamics are a first draft** — DuET writes block dynamics (roughly one mark per 8 bars); refine them by hand from the recording.
+- **Dynamics are a first draft** — `scripts/annotate_dynamics.py` replaces DuET's block marks with marks and hairpins planned from the performed velocities. They follow the shape of the performance, but levels are relative to that performance (transcribed velocity is not absolute loudness); refine them by ear.
   **Pedaling** is harmony-derived (one pedal per bar, re-pedalled at harmony changes)
   and is a sensible default to refine, not an interpretive decision.
 

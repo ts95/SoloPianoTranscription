@@ -54,4 +54,4 @@ Report all artifact paths (mp3, mid, cleaned.mid, musicxml, mscz, pdf, CLEANUP_N
 
 - The `.cleaned.mid` can be auditioned to check transcription quality.
 - The `.musicxml` is for other notation software; the `.mscz` opens directly in MuseScore 4.
-- **Dynamics are DuET's block-level draft** — the user refines them by hand from the recording.
+- **Dynamics and hairpins come from the performed velocities** (`annotate_dynamics.py`) — a draft that follows the performance's shape; the user refines it by ear.

@@ -12,7 +12,7 @@ Deliverables:
 - The score as a **single** set `<slug>.musicxml` / `<slug>.mscz` / `<slug>.pdf` (DuET engraving + metadata + harmony pedaling baked into the one file — never a separate "cleaned" vs "pedaled" variant).
 - `CLEANUP_NOTES.md` — what was done automatically + the verify-by-ear checklist.
 
-The score is a foundation to finish by hand (its dynamics are DuET's block-level draft, refined manually), not a final edition.
+The score is a foundation to finish by hand (its dynamics are a velocity-derived draft, refined by ear), not a final edition.
 
 **MIDI-only mode**: if the user asked for just a cleaned MIDI (no sheet music), run steps 1–3 and stop — `<slug>.cleaned.mid` is complete on its own (artifacts removed, trimmed, correct tempo/meter/key meta). Skip the DuET engraving and base `CLEANUP_NOTES.md` on the clean report alone.
 
@@ -91,7 +91,7 @@ Three sections:
 3. **Verify by ear** — each flag with ≈measure + timestamp. Lead with the `verify.json` results (worst bars with mm:ss, drift suspects, repeat inconsistencies) and any consensus suspects. Then DuET's `review.json` items (key changes, borrowed chords vs modulation, low-margin spellings, runs that may be tuplets, notes written away from where they were played). Then the standing items:
    - verify pitches against the recording (the model cannot hear; wrong/missed notes are invisible in the data)
    - the downbeat anchor: if the piece opens with a pickup, every barline is shifted
-   - **dynamics are DuET's block-level draft** (roughly one mark per 8 bars) — refine them by hand from the recording
+   - **dynamics are a velocity-derived draft** (`annotate_dynamics.py`: marks and hairpins follow the performance's shape, levels are relative to it) — check them by ear, especially the hairpin lengths
    - **meter**: if DuET's engraved meter disagrees with ground truth, say which bars — there is no automatic fix; re-bar by hand in MuseScore
    - dense clusters (possible pedal smear) to thin by ear
    - fast runs DuET engraved as grace notes / glissandi — confirm they're ornaments, not missed notes

@@ -9,7 +9,7 @@ Input: a path to a `.mid` file. In the pipeline this is the cleaned `output/<slu
 
 **Never feed a `.mid` to MuseScore.** Its import quantization auto-detects its own tempo (ignoring the tempo and time-signature meta events) and can lock onto a sub-pulse — wronging every barline and spraying fake tuplets. MIDI → MusicXML always goes through **DuET** (`scripts/duet.sh`); MuseScore is used **only** for the `.musicxml` → `.mscz`/`.pdf` format conversion.
 
-**DuET** is a learned model (note + frame dual encoding) that maps the performance MIDI to cleanly engraved notation. It infers its own key signatures, note spelling, hand/staff assignment, bar structure, meters, runs→grace notes, and glissandi. It also writes block dynamics (a first draft the user refines by hand) and its own pedal marks (replaced by harmony pedaling in step 5). It sets only the title from the input filename (add the rest in step 3).
+**DuET** is a learned model (note + frame dual encoding) that maps the performance MIDI to cleanly engraved notation. It infers its own key signatures, note spelling, hand/staff assignment, bar structure, meters, runs→grace notes, and glissandi. It also writes block dynamics (replaced in step 3c by velocity-derived marks and hairpins) and its own pedal marks (replaced by harmony pedaling in step 5). It sets only the title from the input filename (add the rest in step 3).
 
 **Re-run safe:** before running, check whether `<slug>.musicxml` already exists and is non-empty — if so, skip (unless the user asked to redo it).
 
@@ -83,6 +83,18 @@ The user does not want rests after a note inside a bar — the pedal sustains th
 ```
 
 Each note (or chord) is lengthened to the next note of its voice or the bar end; a rest that opens a bar stays. To re-apply after the user has hand-edited the `.mscz`: export it to MusicXML with `scripts/mscore.sh`, run this on the export, and convert back.
+
+## 3c. Dynamics and hairpins from the performed velocities (rule)
+
+DuET writes only block dynamics. Replace them with marks and hairpins planned from the cleaned MIDI's velocities. Ask the user which range suits the piece if they haven't said (default `p-f`):
+
+```bash
+.venv/bin/python scripts/annotate_dynamics.py \
+  'output/<slug>/<slug>.musicxml' 'output/<slug>/<slug>.cleaned.mid' \
+  'output/<slug>/score.npz' 'output/<slug>/<slug>.musicxml' --range p-f
+```
+
+It prints the marks, the hairpins and the per-bar velocities — put the marks and hairpins in `CLEANUP_NOTES.md`. Levels are relative to this performance, so it is a draft to check by ear. To re-annotate after the user has hand-edited the `.mscz`, export it to MusicXML, run this on the export, and convert back (the bars must be unchanged).
 
 ## 4. Convert to .mscz + .pdf with MuseScore (format conversion only)
 
