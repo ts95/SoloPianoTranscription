@@ -5,7 +5,7 @@ Usage:
     python3 analyze_pedaling.py <file.mscz> [--staff 2] [--json] [--dump]
 
 Inspects the grand staff and reports per-measure:
-- Harmony changes (a new bass note landing on the half-bar) → split recommendation
+- Harmony changes (each point in the bar where a new bass note lands) → split recommendation
 - Density (unique pitch classes, note count) → review flag
 - Sustained bass (low notes held half note+) → informational flag only
 - Articulation conflicts (staccato) → review flag
@@ -25,15 +25,85 @@ import shutil
 
 from musescore_pedal_lib import (
     extract_mscz, extract_measure_data, find_mscx_in_dir,
-    PC_NAMES, get_time_sig_ticks, _HALF_BAR_OK,
+    PC_NAMES, get_time_sig_ticks,
 )
+
+
+_TRIADS = [frozenset((r, (r + third) % 12, (r + 7) % 12))
+           for r in range(12) for third in (3, 4)]
+
+
+def beat_ticks(time_sig):
+    """Ticks per beat: a dotted quarter in compound meters (6/8, 9/8, 12/8),
+    otherwise the denominator's note value."""
+    n, d = (int(x) for x in time_sig.split('/'))
+    if d == 8 and n % 3 == 0 and n > 3:
+        return 720
+    return 1920 // d
+
+
+def bass_split_ticks(mdata):
+    """Ticks inside the bar where a NEW BASS NOTE lands, i.e. where the pedal
+    must change. Returns (split_ticks, first_bass_pc, last_new_bass_pc).
+
+    An arpeggiated left hand plays a different note on every beat without the
+    harmony changing, so "the note differs" is not the test. Over all voices of
+    the bass staff, walking the onsets left to right, a new bass is a struck
+    note of a different pitch class than the current segment's lowest note that
+    either
+      - DROPS below that lowest note (any onset, on or off the beat), or
+      - on a beat, is the lowest note of its beat, at most a fifth above the
+        segment's lowest note, and does not fit one major/minor triad together
+        with the segment (so root-fifth-third figures stay one pedal).
+    No pedal segment is shorter than a beat; a deeper drop arriving within a
+    beat of the previous drop moves that split instead of adding one.
+
+    ponytail: bass-line heuristic, not chord recognition. Misses a bare bass
+    rising by a triad interval within a fifth (C2 -> F2 with nothing else);
+    false-splits a descending arpeggio. Upgrade path: per-segment chord labels.
+    """
+    bt = beat_ticks(mdata['time_sig'])
+    total = mdata['ticks']
+    notes = sorted((ev['tick'], p)
+                   for evs in mdata['staves'].get('2', {}).get('voices', {}).values()
+                   for ev in evs if ev['type'] == 'Chord' for p in ev['pitches'])
+    if not notes:
+        return [], None, None
+    first_pc = min(p for t, p in notes if t == notes[0][0]) % 12
+    splits, seg_start, new_pc, last_was_drop = [], 0, None, False
+    for t in sorted({k for k, _ in notes if k > 0}):
+        if total - t < bt:
+            break
+        seg = [p for k, p in notes if seg_start <= k < t]
+        if not seg:
+            continue
+        bass, new = min(seg), min(p for k, p in notes if k == t)
+        if new % 12 == bass % 12:
+            continue
+        drop = new < bass
+        if t - seg_start < bt:
+            # too close to the previous split: only a deeper drop may move it
+            if drop and last_was_drop and splits:
+                splits[-1] = seg_start = t
+                new_pc = new % 12
+            continue
+        if not drop:
+            if t % bt:
+                continue
+            beat = [p for k, p in notes if t <= k < t + bt]
+            if (new != min(beat) or new - bass > 7
+                    or any(frozenset(p % 12 for p in seg + beat) <= tr for tr in _TRIADS)):
+                continue
+        splits.append(t)
+        seg_start, new_pc, last_was_drop = t, new % 12, drop
+    return splits, first_pc, new_pc
 
 
 def analyze_measure(mdata):
     """Analyze a single measure's data and return recommendation dict.
 
     Returns dict with keys:
-        number, time_sig, ticks, bass_start_pc, bass_mid_pc,
+        number, time_sig, ticks, split_ticks, bass_start_pc, bass_mid_pc,
         unique_pcs, note_count, flags, recommendation
     """
     mnum = mdata['number']
@@ -45,7 +115,7 @@ def analyze_measure(mdata):
         'number': mnum,
         'time_sig': time_sig,
         'ticks': ticks,
-        'split_tick': None,
+        'split_ticks': [],
         'bass_start_pc': None,
         'bass_mid_pc': None,
         'unique_pcs': 0,
@@ -96,40 +166,13 @@ def analyze_measure(mdata):
     bass_events = _find_bass_events(mdata)
 
     if bass_events:
-        # A harmony change at the half-bar means a NEW BASS NOTE lands there —
-        # not merely that the note at the half-bar differs from beat 1 (an
-        # arpeggiated left hand does that in every bar). Over all voices of the
-        # bass staff, the half-bar must (1) strike the lowest note of the second
-        # half, (2) of a different pitch class than the first half's lowest
-        # note, (3) at most a fifth above it: a continuing arpeggio climbs
-        # further, a new bass stays in the bass register.
-        # ponytail: misses a new bass that is anticipated/delayed off the
-        # half-bar or leaps up more than a fifth; false-splits a slow arpeggio
-        # rising by <= a fifth. Upgrade path: chord recognition per half-bar.
-        lows = [(ev['tick'], min(ev['pitches']))
-                for evs in mdata['staves'].get('2', {}).get('voices', {}).values()
-                for ev in evs if ev['type'] == 'Chord' and ev['pitches']]
-        first = [p for t, p in lows if t < half_tick]
-        second = [p for t, p in lows if t >= half_tick]
-        on_half = [p for t, p in lows if t == half_tick]
-        low1 = min(first) if first else None
-        low2 = min(second) if second else None
-
-        start_pc = low1 % 12 if low1 is not None else None
-        mid_pc = low2 % 12 if low2 is not None else start_pc
+        split_ticks, start_pc, new_pc = bass_split_ticks(mdata)
         result['bass_start_pc'] = start_pc
-        result['bass_mid_pc'] = mid_pc
-
-        if (low1 is not None and on_half and min(on_half) == low2
-                and start_pc != mid_pc and low2 - low1 <= 7):
+        result['bass_mid_pc'] = new_pc if split_ticks else start_pc
+        if split_ticks:
             result['flags'].append('harm_change')
-            # 3/4 and 3/8 have no natural half-bar split — keep single by
-            # default and let the user opt into a split via REVIEW.
-            if time_sig in _HALF_BAR_OK:
-                result['recommendation'] = 'split'
-                result['split_tick'] = half_tick
-            else:
-                result['flags'].append('prefer_single_3beat')
+            result['recommendation'] = 'split'
+            result['split_ticks'] = split_ticks
 
         # --- Sustained bass detection (informational flag) ---
         # Very low bass notes (below C3) held for half note or longer already

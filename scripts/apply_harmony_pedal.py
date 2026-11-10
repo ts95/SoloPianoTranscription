@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Replace a score's pedaling with harmony-aware legato pedal marks.
 
-Reads the NOTATED harmony from the .mscz (does a new bass note land on the
-half-bar?) and lays one syncopated pedal per measure, split mid-bar where the
-harmony changes. This is independent of the transcriber's CC64, which is only
+Reads the NOTATED harmony from the .mscz (where in each bar does a new bass
+note land?) and lays one syncopated pedal per measure, re-pedalled at every
+such point. This is independent of the transcriber's CC64, which is only
 binary (0/127) and under-segments fast re-pedaling, so it does not track the
 harmony. Edits the .mscz in place (the .bak the library writes is removed
 unless --keep-backup).
@@ -17,7 +17,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from musescore_pedal_lib import (
-    extract_mscz, extract_measure_data, add_pedals, make_syncopated_pedal_config,
+    extract_mscz, extract_measure_data, add_pedals, ticks_to_frac,
 )
 from analyze_pedaling import analyze_measure
 
@@ -37,15 +37,17 @@ def main():
     mscx = extract_mscz(args.mscz, os.path.join(td.name, "analyze"))
     measures = extract_measure_data(mscx, staff_ids=("1", "2"))
     results = [analyze_measure(m) for m in measures]
-    splits = {r["number"] for r in results if r["recommendation"] == "split"}
+    split_ticks = {r["number"]: r["split_ticks"] for r in results}
     review = {r["number"] for r in results if r["recommendation"] == "review"}
     ticks = {r["number"]: r["ticks"] for r in results}
-    sigs = {r["number"]: r["time_sig"] for r in results}
+    splits = {m for m, s in split_ticks.items() if s}
 
-    cfg = make_syncopated_pedal_config(
-        lambda m: ticks.get(m, 1920),
-        split_measures=splits,
-        time_sig_fn=lambda m: sigs.get(m, "4/4"))
+    def cfg(mnum, gap=60):
+        """One legato pedal per segment between the bar's bass arrivals: down
+        `gap` ticks after each boundary, up `gap` ticks before the next."""
+        bounds = [0] + split_ticks.get(mnum, []) + [ticks.get(mnum, 1920)]
+        return [(a + gap, b - gap, ticks_to_frac(b - a - 2 * gap))
+                for a, b in zip(bounds, bounds[1:])]
 
     add_pedals(args.mscz, cfg, staff_id=args.staff, extract_dir=os.path.join(td.name, "write"))
     td.cleanup()
@@ -55,8 +57,9 @@ def main():
         if os.path.exists(bak):
             os.remove(bak)
 
-    print(f"\nharmony pedal: {len(results)} measures, {len(splits)} split at a "
-          f"harmony change, {len(results) - len(splits)} single"
+    print(f"\nharmony pedal: {len(results)} measures, {len(splits)} re-pedalled at a "
+          f"new bass ({sum(len(v) for v in split_ticks.values())} extra pedals), "
+          f"{len(results) - len(splits)} single"
           + (f"; review (verify by ear): {sorted(review)}" if review else ""))
 
 

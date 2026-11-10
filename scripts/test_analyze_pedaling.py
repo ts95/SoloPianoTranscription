@@ -71,7 +71,33 @@ def test_empty_bass_staff_is_not_split():
     print("ok: a bar with an empty bass staff is not split on the melody")
 
 
+def seq(pairs, time_sig="4/4", ticks=1920):
+    m = measure([note(t, p) for t, p in pairs])
+    m["time_sig"], m["ticks"] = time_sig, ticks
+    return analyze_measure(m)["split_ticks"]
+
+
+def test_bass_arrivals_anywhere_in_the_bar():
+    # off-beat drop: tenor run C4 D4 Eb4 C4, then the bass G2 lands on the "and" of beat 2
+    assert seq([(0, 60), (120, 62), (240, 63), (480, 60), (720, 43), (840, 50), (1080, 58)]) == [720]
+    # one pedal per bass in a walking line: C2 | A1 | F1 | G1 (each a drop or a non-triad rise)
+    assert seq([(0, 36), (480, 33), (960, 29), (1440, 31)]) == [480, 960, 1440]
+    # 3/4 now splits on a beat too: C2 G2 | F2 C3 | (beat 3 continues F)
+    assert seq([(0, 36), (240, 43), (480, 41), (720, 48), (960, 45)], "3/4", 1440) == [480]
+    print("ok: a new bass splits wherever it lands — off the beat, on every beat, in 3/4")
+
+
+def test_pedal_segments_are_at_least_a_beat():
+    # a deeper drop within a beat of the previous drop MOVES the split (E3 at 600, then B2 at 840)
+    assert seq([(0, 64), (120, 61), (360, 57), (600, 52), (840, 47), (1080, 54)]) == [840]
+    # a new bass in the last fraction of the bar (anticipating the next bar) does not split
+    assert seq([(0, 43), (480, 50), (960, 55), (1680, 41)]) == []
+    print("ok: no pedal segment is shorter than a beat")
+
+
 if __name__ == "__main__":
+    test_bass_arrivals_anywhere_in_the_bar()
+    test_pedal_segments_are_at_least_a_beat()
     test_arpeggiated_single_harmony_is_not_split()
     test_new_bass_on_the_half_bar_splits_under_an_arpeggio()
     test_empty_bass_staff_is_not_split()
