@@ -1,84 +1,84 @@
 #!/usr/bin/env python3
-"""Force ONE constant tempo on a raw DuET score.
+"""Force ONE constant tempo on a score.
 
 DuET infers a tempo per section: visible metronome marks plus hidden
-<sound tempo> playback changes. When the true tempo is known (web ground
-truth), this rewrites the score to a single quarter-note tempo.
+<sound tempo> playback changes. When the true tempo is known (measured by
+bar_timing.py, or from the web), this rewrites the score to a single
+quarter-note tempo.
 
-Run it on the RAW DuET score.musicxml, right after DuET and before MuseScore
-regenerates the file: it is a targeted text edit (NOT a music21 round-trip)
-that matches DuET's compact tags, and it exits 1 if it finds no metronome mark.
+Works on a raw DuET score.musicxml and on a MuseScore export alike.
 
-There is deliberately no meter override. Re-barring is not a text edit; a
-wrong meter is flagged in CLEANUP_NOTES.md and fixed by hand in MuseScore.
+There is deliberately no meter override. Re-barring is not a mechanical edit;
+see relabel_meter.py for the one case that is.
 
 Usage:
   normalize_tempo.py <in.musicxml> <out.musicxml> --tempo 93
 
 What changes:
-  - the first <metronome> becomes quarter = N; every other <metronome> is removed
-  - the first <sound tempo> becomes N; every other <sound tempo> is removed
+  - the first metronome mark becomes quarter = N; every other one is removed
+  - the first playback tempo becomes N; every other one is removed
   - directions left empty by those removals are removed
   - text directions (rit., a tempo) and everything else are untouched
 """
 import argparse
 import json
-import re
+import os
 import sys
 
-METRONOME = re.compile(r'<metronome>.*?</metronome>', flags=re.S)
-SOUND_TEMPO = re.compile(r'<sound tempo="[^"]*"/>')
-EMPTY_DIRECTION = re.compile(
-    r'<direction[^>]*><direction-type>(?:<words/>)?</direction-type><staff>\d+</staff></direction>')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from musicxml_io import load, save  # noqa: E402
 
 
-def _keep_first(pattern, xml, first):
-    """Replace the first match of `pattern` with `first`, delete the rest.
-    Returns (new_xml, number_deleted)."""
-    matches = list(pattern.finditer(xml))
-    for m in reversed(matches[1:]):
-        xml = xml[:m.start()] + xml[m.end():]
-    m = matches[0]
-    return xml[:m.start()] + first + xml[m.end():], len(matches) - 1
-
-
-def normalize_tempo(xml, bpm):
-    if not METRONOME.search(xml):
-        raise ValueError("no <metronome> found — run this on the raw DuET score.musicxml, "
-                         "before MuseScore regenerates it")
-    xml, marks_removed = _keep_first(
-        METRONOME, xml,
-        f'<metronome><beat-unit>quarter</beat-unit><per-minute>{bpm}</per-minute></metronome>')
-    sounds_removed = 0
-    if SOUND_TEMPO.search(xml):
-        xml, sounds_removed = _keep_first(SOUND_TEMPO, xml, f'<sound tempo="{bpm}"/>')
-    xml, empties_removed = EMPTY_DIRECTION.subn('', xml)
-    return xml, {"bpm": bpm, "metronome_marks_removed": marks_removed,
-                 "sound_tempos_removed": sounds_removed,
-                 "empty_directions_removed": empties_removed}
+def normalize_tempo(root, bpm):
+    parents = {child: parent for parent in root.iter() for child in parent}
+    marks = list(root.iter("metronome"))
+    if not marks:
+        raise ValueError("no <metronome> found in the score")
+    first = marks[0]
+    for dot in first.findall("beat-unit-dot"):
+        first.remove(dot)
+    first.find("beat-unit").text = "quarter"
+    first.find("per-minute").text = str(bpm)
+    for mark in marks[1:]:
+        parents[mark].remove(mark)
+    sounds = [s for s in root.iter("sound") if s.get("tempo") is not None]
+    for s in sounds[:1]:
+        s.set("tempo", str(bpm))
+    for s in sounds[1:]:
+        del s.attrib["tempo"]
+        if not s.attrib and len(s) == 0:
+            parents[s].remove(s)
+    emptied = 0
+    for direction in list(root.iter("direction")):
+        content = [c for dt in direction.findall("direction-type") for c in dt
+                   if not (c.tag == "words" and not (c.text or "").strip())]
+        if not content and direction.find("sound") is None:
+            parents[direction].remove(direction)
+            emptied += 1
+    return {"bpm": bpm, "metronome_marks_removed": len(marks) - 1,
+            "sound_tempos_removed": max(0, len(sounds) - 1),
+            "empty_directions_removed": emptied}
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('input')
-    ap.add_argument('output')
-    ap.add_argument('--tempo', type=float, required=True,
-                    help='constant quarter-note BPM for the whole piece')
+    ap.add_argument("input")
+    ap.add_argument("output")
+    ap.add_argument("--tempo", type=float, required=True,
+                    help="constant quarter-note BPM for the whole piece")
     args = ap.parse_args()
 
-    with open(args.input, encoding='utf-8') as f:
-        xml = f.read()
+    prolog, root = load(args.input)
     try:
-        xml, report = normalize_tempo(xml, int(round(args.tempo)))
+        report = normalize_tempo(root, int(round(args.tempo)))
     except ValueError as e:
         print(f"normalize_tempo: {e}", file=sys.stderr)
         return 1
-    with open(args.output, 'w', encoding='utf-8') as f:
-        f.write(xml)
+    save(args.output, prolog, root)
     print(json.dumps({"input": args.input, "output": args.output, **report}, indent=2))
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

@@ -20,8 +20,12 @@ Works on a raw DuET score and on a MuseScore export alike. Rules:
 import argparse
 import copy
 import json
+import os
 import sys
 import xml.etree.ElementTree as ET
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from musicxml_io import let_musescore_rebeam, load, save  # noqa: E402
 
 TYPES = [("whole", 16), ("half", 8), ("quarter", 4), ("eighth", 2), ("16th", 1)]  # in 16ths
 
@@ -132,21 +136,7 @@ def fill_rests(root):
             if d is not None:
                 div = int(d.text)
             fill_measure(measure, div, stats)
-    beams = 0
-    for note in root.iter("note"):
-        for beam in note.findall("beam"):
-            note.remove(beam)
-            beams += 1
-    stats["beams_removed"] = beams
-    # A MuseScore export declares <supports element="beam"/"print">, which makes the
-    # next import trust the file's (now absent) beams and its old system/page breaks.
-    # Dropping the declarations and the breaks lets MuseScore beam and lay out afresh.
-    for encoding in root.iter("encoding"):
-        for supports in encoding.findall("supports"):
-            encoding.remove(supports)
-    for pr in root.iter("print"):
-        pr.attrib.pop("new-system", None)
-        pr.attrib.pop("new-page", None)
+    stats["beams_removed"] = let_musescore_rebeam(root)
     stats["rests_left"] = sum(1 for n in root.iter("note") if n.find("rest") is not None)
     return stats
 
@@ -158,13 +148,9 @@ def main():
     ap.add_argument("output")
     args = ap.parse_args()
 
-    with open(args.input, encoding="utf-8") as f:
-        text = f.read()
-    start = text.index("<score-partwise")
-    root = ET.fromstring(text[start:])
+    prolog, root = load(args.input)
     stats = fill_rests(root)
-    with open(args.output, "w", encoding="utf-8") as f:
-        f.write(text[:start] + ET.tostring(root, encoding="unicode") + "\n")
+    save(args.output, prolog, root)
     print(json.dumps({"input": args.input, "output": args.output, **stats}, indent=2))
     return 0
 
